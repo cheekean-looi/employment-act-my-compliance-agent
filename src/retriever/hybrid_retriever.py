@@ -11,6 +11,7 @@ import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer, CrossEncoder
 from rank_bm25 import BM25Okapi
+from .advanced_query_rewrite import AdvancedQueryRewriter
 
 
 class HybridRetriever:
@@ -49,6 +50,9 @@ class HybridRetriever:
         
         print(f"Loading cross-encoder model: {reranker_model}")
         self.reranker = CrossEncoder(reranker_model)
+        
+        # Initialize advanced query rewriter
+        self.advanced_rewriter = AdvancedQueryRewriter()
         
         print(f"Loaded retriever with {len(self.chunks)} chunks")
     
@@ -176,26 +180,36 @@ class HybridRetriever:
         # Return top-k
         return scored_results[:top_k]
     
-    def retrieve(self, query: str, top_k: int = 8) -> List[Dict[str, Any]]:
+    def retrieve(self, query: str, top_k: int = 8, use_advanced_rewrite: bool = True) -> List[Dict[str, Any]]:
         """Perform hybrid retrieval with re-ranking.
         
         Args:
             query: Search query
             top_k: Number of final results to return
+            use_advanced_rewrite: Whether to use advanced query rewriting
             
         Returns:
             List of top-k ranked chunks with metadata
         """
         print(f"Retrieving for query: '{query[:50]}...'")
         
-        # Step 1: Get BM25 candidates (top-100)
+        if use_advanced_rewrite:
+            # Use advanced query rewriting with statutory terms
+            return self._retrieve_with_advanced_rewrite(query, top_k)
+        else:
+            # Original single-query retrieval
+            return self._retrieve_single(query, top_k)
+    
+    def _retrieve_single(self, query: str, top_k: int = 8) -> List[Dict[str, Any]]:
+        """Original single-query retrieval method."""
+        # Step 1: Get BM25 candidates (top-120)
         print("Getting BM25 candidates...")
-        bm25_candidates = self._get_bm25_candidates(query, top_k=100)
+        bm25_candidates = self._get_bm25_candidates(query, top_k=120)
         print(f"BM25 found {len(bm25_candidates)} candidates")
         
-        # Step 2: Get dense candidates (top-50)
+        # Step 2: Get dense candidates (top-80)
         print("Getting dense candidates...")
-        dense_candidates = self._get_dense_candidates(query, top_k=50)
+        dense_candidates = self._get_dense_candidates(query, top_k=80)
         print(f"Dense found {len(dense_candidates)} candidates")
         
         # Step 3: Merge candidates (union)
@@ -208,6 +222,63 @@ class HybridRetriever:
         print(f"Returning top-{len(final_results)} results")
         
         return final_results
+    
+    
+    def _retrieve_with_advanced_rewrite(self, query: str, top_k: int = 8) -> List[Dict[str, Any]]:
+        """Enhanced retrieval using advanced query rewriting with statutory terms."""
+        # Check for out-of-scope queries first
+        normalized, priority_sections, is_out_of_scope = self.advanced_rewriter.normalize_query(query)
+        
+        if is_out_of_scope:
+            print("Query marked as out-of-scope (no statutory basis)")
+            return []
+        
+        # Generate enhanced query variants
+        query_variants = self.advanced_rewriter.expand_query(query)
+        print(f"Generated {len(query_variants)} enhanced query variants")
+        
+        all_candidates = set()
+        
+        # Collect candidates from all query variants
+        for i, variant in enumerate(query_variants):
+            print(f"Processing variant {i+1}/{len(query_variants)}: '{variant[:50]}...'")
+            
+            # Get BM25 candidates for this variant
+            bm25_candidates = self._get_bm25_candidates(variant, top_k=120)
+            
+            # Get dense candidates for this variant  
+            dense_candidates = self._get_dense_candidates(variant, top_k=80)
+            
+            # Merge and add to global candidate set
+            variant_candidates = self._merge_candidates(bm25_candidates, dense_candidates)
+            all_candidates.update(variant_candidates)
+        
+        print(f"Total unique candidates from all variants: {len(all_candidates)}")
+        
+        # Re-rank all candidates using original query
+        print("Re-ranking with cross-encoder using original query...")
+        enhanced_results = self._rerank_candidates(query, list(all_candidates), top_k=top_k)
+        
+        # Boost priority sections if they exist
+        if priority_sections and enhanced_results:
+            boosted_results = []
+            non_priority = []
+            
+            for result in enhanced_results:
+                section_id = result.get('section_id', '')
+                if section_id in priority_sections:
+                    result['score'] = result.get('score', 0) + 2.0  # Strong boost for priority sections
+                    boosted_results.append(result)
+                else:
+                    non_priority.append(result)
+            
+            # Re-sort by boosted scores
+            all_results = boosted_results + non_priority
+            all_results.sort(key=lambda x: x.get('score', 0), reverse=True)
+            enhanced_results = all_results[:top_k]
+        
+        print(f"Returning top-{len(enhanced_results)} results with priority boosting")
+        return enhanced_results
     
     def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict[str, Any]]:
         """Get a specific chunk by its ID.

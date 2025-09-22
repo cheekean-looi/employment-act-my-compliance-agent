@@ -14,19 +14,44 @@ import hashlib
 
 
 def detect_section_id(text: str) -> Optional[str]:
-    """Detect section ID from text content."""
-    # Common patterns for Malaysian Employment Act sections
+    """Detect section ID from text content with enhanced patterns."""
+    # Enhanced patterns for Malaysian Employment Act sections
     patterns = [
-        r'(?:Section|Sec\.?)\s*(\d+[A-Z]?(?:\(\d+\))?)',
-        r'(\d+[A-Z]?(?:\(\d+\))?)\.\s*[A-Z]',  # Section number followed by period and capital letter
+        r'(?:Section|Sec\.?)\s*(\d+[A-Z]?(?:\([a-z]+\))?)',  # Section 60A(a)
+        r'(\d+[A-Z]?(?:\([a-z]+\))?)\.\s*[A-Z]',  # 60A(a). Capital letter
+        r'(\d+[A-Z]?)\s+[A-Z]',  # 60A Overtime  
         r'Part\s+([IVX]+)',  # Roman numeral parts
         r'Chapter\s+(\d+)',
+        r'(\d+[A-Z]?)\s*[-–]\s*[A-Z]',  # 60A - Title format
+        r'(\d+[A-Z]?)\s*[:\.]',  # 60A: or 60A.
     ]
     
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             return f"EA-{match.group(1)}"
+    
+    return None
+
+
+def extract_section_title(text: str) -> Optional[str]:
+    """Extract section title from text."""
+    # Look for section titles after section numbers
+    title_patterns = [
+        r'(?:Section|Sec\.?)\s*\d+[A-Z]?(?:\([a-z]+\))?\s*[-–]?\s*([A-Z][^\n.]{10,80})',
+        r'\d+[A-Z]?(?:\([a-z]+\))?\.\s*([A-Z][^\n.]{10,80})',
+        r'\d+[A-Z]?(?:\([a-z]+\))?\s+([A-Z][^\n.]{10,80})',
+        r'\d+[A-Z]?\s*[-–]\s*([A-Z][^\n.]{10,80})',
+    ]
+    
+    for pattern in title_patterns:
+        match = re.search(pattern, text[:200])  # Check first 200 chars
+        if match:
+            title = match.group(1).strip()
+            # Clean up common suffixes
+            title = re.sub(r'\s*[-–]\s*$', '', title)
+            title = re.sub(r'\s*\.$', '', title)
+            return title
     
     return None
 
@@ -45,7 +70,7 @@ def create_chunk_id(text: str, index: int) -> str:
     return f"chunk_{index:04d}_{content_hash}"
 
 
-def chunk_text(text: str, chunk_size: int = 900, stride: int = 150, min_chunk_size: int = 100) -> List[Dict[str, any]]:
+def chunk_text(text: str, chunk_size: int = 1000, stride: int = 300, min_chunk_size: int = 100, with_titles: bool = True) -> List[Dict[str, any]]:
     """
     Chunk text into overlapping segments.
     
@@ -106,16 +131,29 @@ def chunk_text(text: str, chunk_size: int = 900, stride: int = 150, min_chunk_si
         chunk_text = text[start:end].strip()
         
         if len(chunk_text) >= min_chunk_size:
-            # Detect section ID for this chunk
+            # Detect section ID and title for this chunk
             section_id = detect_section_id(chunk_text)
+            section_title = extract_section_title(chunk_text)
+            
+            # Enhance chunk text with title context if available and requested
+            enhanced_text = chunk_text
+            if with_titles and section_title and section_id:
+                # Prepend title if not already in chunk
+                if section_title.lower() not in chunk_text[:100].lower():
+                    enhanced_text = f"[Employment Act Section {section_id}: {section_title}] {chunk_text}"
+            elif with_titles and section_id:
+                # At minimum, add section ID
+                enhanced_text = f"[Employment Act Section {section_id}] {chunk_text}"
             
             chunk = {
                 'chunk_id': create_chunk_id(chunk_text, chunk_index),
-                'text': chunk_text,
+                'text': enhanced_text,
+                'original_text': chunk_text,
                 'start_pos': start,
                 'end_pos': end,
-                'length': len(chunk_text),
+                'length': len(enhanced_text),
                 'section_id': section_id,
+                'section_title': section_title,
                 'chunk_index': chunk_index
             }
             
@@ -158,13 +196,13 @@ def post_process_chunks(chunks: List[Dict[str, any]]) -> List[Dict[str, any]]:
     return chunks
 
 
-def process_document(doc: Dict[str, any], chunk_size: int = 900, stride: int = 150) -> List[Dict[str, any]]:
+def process_document(doc: Dict[str, any], chunk_size: int = 1000, stride: int = 300, with_titles: bool = True) -> List[Dict[str, any]]:
     """Process a single document and return its chunks."""
     text = doc['text']
     doc_id = doc['id']
     
     # Create chunks
-    chunks = chunk_text(text, chunk_size, stride)
+    chunks = chunk_text(text, chunk_size, stride, with_titles=with_titles)
     
     # Post-process for better section detection
     chunks = post_process_chunks(chunks)
@@ -181,7 +219,7 @@ def process_document(doc: Dict[str, any], chunk_size: int = 900, stride: int = 1
     return chunks
 
 
-def process_jsonl_file(input_file: Path, output_file: Path, chunk_size: int = 900, stride: int = 150) -> None:
+def process_jsonl_file(input_file: Path, output_file: Path, chunk_size: int = 1000, stride: int = 300, with_titles: bool = True) -> None:
     """Process JSONL file and create chunks."""
     print(f"Processing: {input_file}")
     
@@ -195,7 +233,7 @@ def process_jsonl_file(input_file: Path, output_file: Path, chunk_size: int = 90
         for line_num, line in enumerate(f, 1):
             try:
                 doc = json.loads(line.strip())
-                chunks = process_document(doc, chunk_size, stride)
+                chunks = process_document(doc, chunk_size, stride, with_titles)
                 all_chunks.extend(chunks)
                 document_count += 1
                 
@@ -232,10 +270,12 @@ def main():
                         help='Input JSONL file from pdf_to_text.py')
     parser.add_argument('--out', dest='output_file', required=True,
                         help='Output JSONL file for chunks')
-    parser.add_argument('--chunk', type=int, default=900,
-                        help='Target chunk size in characters (default: 900)')
-    parser.add_argument('--stride', type=int, default=150,
-                        help='Overlap size between chunks (default: 150)')
+    parser.add_argument('--chunk', type=int, default=1000,
+                        help='Target chunk size in characters (default: 1000)')
+    parser.add_argument('--stride', type=int, default=300,
+                        help='Overlap size between chunks (default: 300)')
+    parser.add_argument('--with-titles', action='store_true', default=True,
+                        help='Include section titles in chunks (default: True)')
     
     args = parser.parse_args()
     
@@ -246,7 +286,7 @@ def main():
         print(f"Error: Input file {input_file} does not exist")
         return
     
-    process_jsonl_file(input_file, output_file, args.chunk, args.stride)
+    process_jsonl_file(input_file, output_file, args.chunk, args.stride, getattr(args, 'with_titles', True))
 
 
 if __name__ == "__main__":

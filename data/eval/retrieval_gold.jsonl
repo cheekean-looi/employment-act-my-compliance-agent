@@ -1,0 +1,20 @@
+{"query": "How many days of annual leave am I entitled to?", "relevant_section_ids": ["EA-60E"], "query_id": "Q001"}
+{"query": "What is the minimum notice period for termination?", "relevant_section_ids": ["EA-12", "EA-13"], "query_id": "Q002"}
+{"query": "How much overtime pay should I receive?", "relevant_section_ids": ["EA-60A", "EA-62"], "query_id": "Q003"}
+{"query": "What are the rules for sick leave entitlement?", "relevant_section_ids": ["EA-60E", "EA-60F"], "query_id": "Q004"}
+{"query": "Can my employer terminate me during pregnancy?", "relevant_section_ids": ["EA-13", "EA-38"], "query_id": "Q005"}
+{"query": "What is the maximum working hours per day?", "relevant_section_ids": ["EA-60", "EA-60A"], "query_id": "Q006"}
+{"query": "Am I entitled to maternity leave?", "relevant_section_ids": ["EA-37", "EA-38"], "query_id": "Q007"}
+{"query": "What constitutes misconduct for dismissal?", "relevant_section_ids": ["EA-14"], "query_id": "Q008"}
+{"query": "How are termination benefits calculated?", "relevant_section_ids": ["EA-60J"], "query_id": "Q009"}
+{"query": "What are the public holidays I'm entitled to?", "relevant_section_ids": ["EA-60A", "EA-60D"], "query_id": "Q010"}
+{"query": "Can I work on rest days?", "relevant_section_ids": ["EA-60A", "EA-61"], "query_id": "Q011"}
+{"query": "What is the probationary period limit?", "relevant_section_ids": ["EA-10"], "query_id": "Q012"}
+{"query": "Am I entitled to bonus payments?", "relevant_section_ids": ["EA-2A"], "query_id": "Q013"}
+{"query": "What happens if I resign without notice?", "relevant_section_ids": ["EA-13"], "query_id": "Q014"}
+{"query": "Can my employer deduct from my salary?", "relevant_section_ids": ["EA-25", "EA-27"], "query_id": "Q015"}
+{"query": "When must my salary be paid?", "relevant_section_ids": ["EA-25"], "query_id": "Q016"}
+{"query": "What is the minimum retirement age?", "relevant_section_ids": ["EA-2A"], "query_id": "Q017"}
+{"query": "Am I entitled to paternity leave?", "relevant_section_ids": ["EA-57", "EA-60E"], "query_id": "Q018"}
+{"query": "What are the female employee protections?", "relevant_section_ids": ["EA-40", "EA-57"], "query_id": "Q019"}
+{"query": "How do I file a complaint against my employer?", "relevant_section_ids": ["EA-80", "EA-81B"], "query_id": "Q020"}
