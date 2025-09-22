@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# python -m src.retriever.rag_pipeline --faiss data/indices/faiss.index --store data/indices/store.pkl --query "your query here"
+# python -m src.generation.rag_pipeline --faiss data/indices/faiss.index --store data/indices/store.pkl --query "your query here"
 """
 RAG pipeline for Employment Act Malaysia compliance agent.
 Integrates hybrid retrieval, prompt templates, guardrails, and LLM generation.
@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 
-from .hybrid_retriever import HybridRetriever
+from ..retriever.hybrid_retriever import HybridRetriever
 from .prompt_templates import PromptTemplates, Response
 from .guardrails import EmploymentActGuardrails, GuardrailsResult
 

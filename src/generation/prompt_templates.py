@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# python src/retriever/prompt_templates.py
+# python src/generation/prompt_templates.py
 """
 Prompt templates for Employment Act Malaysia compliance agent.
 Enforces citation requirements and structured JSON output.

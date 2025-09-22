@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# python src/retriever/guardrails.py
+# python src/generation/guardrails.py
 """
 Guardrails for Employment Act Malaysia compliance agent.
 Handles refusal cases, safety filtering, and escalation logic.
