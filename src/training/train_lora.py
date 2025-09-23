@@ -7,7 +7,6 @@ Trains Llama-3.1-8B-Instruct with LoRA adapters on our SFT dataset.
 
 import json
 import torch
-import wandb
 from pathlib import Path
 from datasets import Dataset
 from transformers import (
@@ -25,7 +24,7 @@ import pandas as pd
 
 class EmploymentActTrainer:
     def __init__(self, 
-                 model_name: str = "microsoft/DialoGPT-medium",
+                 model_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
                  lora_rank: int = 16,
                  lora_alpha: int = 32,
                  lora_dropout: float = 0.1):
@@ -47,26 +46,24 @@ class EmploymentActTrainer:
         # Load model with 4-bit quantization
         print("Loading model with quantization...")
         
-        # Use public model for testing
-        if "llama" in model_name.lower():
-            print("Llama models require authentication. Using DialoGPT instead.")
-            model_name = "microsoft/DialoGPT-medium"
-            self.model_name = model_name
+        # Use Qwen instruction model
+        print(f"Using instruction-tuned model: {model_name}")
             
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            dtype=torch.float32,  # Use float32 for MPS compatibility
-            device_map="auto"
+            torch_dtype=torch.float32,  # Use float32 for MPS compatibility
         )
         
         # Configure LoRA
         print(f"Setting up LoRA (rank={lora_rank}, alpha={lora_alpha}, dropout={lora_dropout})")
         
         # Set target modules based on model architecture
-        if "dialo" in model_name.lower():
-            target_modules = ["c_attn", "c_proj"]  # For DialoGPT
-        else:
+        if "qwen" in model_name.lower():
+            target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # For Qwen
+        elif "llama" in model_name.lower():
             target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # For Llama
+        else:
+            target_modules = ["c_attn", "c_proj"]  # For DialoGPT
             
         lora_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM,
@@ -79,12 +76,40 @@ class EmploymentActTrainer:
         
         self.model = get_peft_model(self.model, lora_config)
         self.model.print_trainable_parameters()
+        
+        # Ensure model is in training mode and gradients are enabled
+        self.model.train()
+        for param in self.model.parameters():
+            if param.requires_grad:
+                param.requires_grad_(True)
     
     def _format_prompt(self, instruction: str, input_text: str = "", output: str = "") -> str:
-        """Format prompt based on model type."""
+        """Format prompt using proper chat template."""
         
-        if "dialo" in self.model_name.lower():
-            # Simple format for DialoGPT
+        if "qwen" in self.model_name.lower() or "llama" in self.model_name.lower():
+            # Use instruction-tuned model chat template
+            system_msg = "You are an expert on Malaysia Employment Act. Provide accurate, helpful answers with proper citations."
+            
+            if input_text.strip():
+                user_content = f"{instruction}\n\n{input_text}"
+            else:
+                user_content = instruction
+            
+            messages = [
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_content}
+            ]
+            
+            if output:
+                messages.append({"role": "assistant", "content": output})
+                # For training, we want the full conversation
+                prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            else:
+                # For inference, add generation prompt
+                prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                
+        else:
+            # Fallback for other models
             if input_text.strip():
                 prompt = f"Human: {instruction}\n{input_text}\nAssistant: "
             else:
@@ -92,16 +117,6 @@ class EmploymentActTrainer:
             
             if output:
                 prompt += output
-                
-        else:
-            # Llama format
-            if input_text.strip():
-                prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an expert on Malaysia Employment Act. Provide accurate, helpful answers with proper citations.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{instruction}\n\n{input_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-            else:
-                prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\nYou are an expert on Malaysia Employment Act. Provide accurate, helpful answers with proper citations.<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{instruction}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-            
-            if output:
-                prompt += output + "<|eot_id|>"
         
         return prompt
     
@@ -182,7 +197,7 @@ class EmploymentActTrainer:
               eval_steps: int = 50,
               save_steps: int = 100,
               warmup_steps: int = 10,
-              gradient_checkpointing: bool = True):
+              gradient_checkpointing: bool = False):
         """Train the model with QLoRA."""
         
         print(f"  Starting training...")
@@ -224,10 +239,11 @@ class EmploymentActTrainer:
             dataloader_pin_memory=False,
         )
         
-        # Data collator
+        # Data collator with padding
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer,
             mlm=False,
+            pad_to_multiple_of=8,
         )
         
         # Initialize trainer
@@ -280,13 +296,18 @@ class EmploymentActTrainer:
             # Tokenize input
             inputs = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
             
-            # Generate response
+            # Generate response with low temperature and repetition controls
             with torch.no_grad():
                 outputs = self.model.generate(
                     inputs,
                     max_new_tokens=200,
-                    temperature=0.7,
                     do_sample=True,
+                    temperature=0.1,  # Low temperature for focused output
+                    top_p=0.9,
+                    repetition_penalty=1.2,
+                    no_repeat_ngram_size=4,
+                    length_penalty=1.0,
+                    early_stopping=True,
                     pad_token_id=self.tokenizer.eos_token_id
                 )
             
@@ -361,7 +382,7 @@ def main():
     parser.add_argument('--train-data', required=True, help='Training JSONL file')
     parser.add_argument('--eval-data', required=True, help='Evaluation JSONL file')
     parser.add_argument('--output-dir', required=True, help='Output directory for model and logs')
-    parser.add_argument('--model-name', default="microsoft/DialoGPT-medium", 
+    parser.add_argument('--model-name', default="Qwen/Qwen2.5-1.5B-Instruct", 
                        help='Base model name')
     parser.add_argument('--epochs', type=int, default=3, help='Number of training epochs')
     parser.add_argument('--batch-size', type=int, default=4, help='Training batch size')
