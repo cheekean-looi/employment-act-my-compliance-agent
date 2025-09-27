@@ -158,21 +158,26 @@ class PolicyClassifier:
         should_refuse, triggered_rules, refusal_message = self.classifier.classify(text)
         
         if should_refuse:
-            return GuardrailResult(
+            result = GuardrailResult(
                 passed=False,
                 processed_text=refusal_message,
                 confidence=0.9,
                 reason=f"Policy violation detected: {', '.join(triggered_rules[:2])}",
                 report=None  # Legacy mode doesn't have full report
             )
+            # Attach legacy-compatible triggered rules attribute
+            setattr(result, 'triggered_rules', triggered_rules)
+            return result
         
-        return GuardrailResult(
+        result = GuardrailResult(
             passed=True,
             processed_text=text,
             confidence=1.0,
             reason="No policy violations detected",
             report=None
         )
+        setattr(result, 'triggered_rules', [])
+        return result
 
 class ConfigurablePIIScrubber:
     """PII scrubber driven by YAML configuration."""
@@ -264,29 +269,35 @@ class PIIScrubber:
         should_refuse, processed_text, detected_pii = self.scrubber.scrub(text)
         
         if should_refuse:
-            return GuardrailResult(
+            result = GuardrailResult(
                 passed=False,
                 processed_text=processed_text,
                 confidence=0.95,
                 reason=f"PII detected: {', '.join(detected_pii)}",
                 report=None
             )
+            setattr(result, 'triggered_rules', [f"pii_{t}_refused" for t in detected_pii])
+            return result
         elif detected_pii:
-            return GuardrailResult(
+            result = GuardrailResult(
                 passed=True,
                 processed_text=processed_text,
                 confidence=0.9,
                 reason=f"PII masked: {', '.join(detected_pii)}",
                 report=None
             )
+            setattr(result, 'triggered_rules', [f"pii_{t}_masked" for t in detected_pii])
+            return result
         
-        return GuardrailResult(
+        result = GuardrailResult(
             passed=True,
             processed_text=processed_text,
             confidence=1.0,
             reason="No PII detected",
             report=None
         )
+        setattr(result, 'triggered_rules', [])
+        return result
 
 class ProductionGuardrailsEngine:
     """
