@@ -10,10 +10,11 @@ import tempfile
 import warnings
 from pathlib import Path
 from unittest.mock import patch, MagicMock
-import torch
+import pytest
+# Require torch for this optional smoke test; skip cleanly if missing
+torch = pytest.importorskip("torch", reason="Requires PyTorch")
 
-# Add src to path
-sys.path.append(str(Path(__file__).parent.parent / 'src'))
+# Project imports are resolved via pytest.ini (pythonpath = src)
 
 from evals.generation_eval import LLMJudge, GenerationEvaluator
 from evals.validation_utils import CitationValidator, NumericValidator

@@ -90,8 +90,8 @@ class HybridRetriever:
         Returns:
             List of (chunk_index, score) tuples
         """
-        # Encode query
-        query_embedding = self.embedding_model.encode([query])
+        # Encode query with E5 query prefix for proper embedding
+        query_embedding = self.embedding_model.encode([f"query: {query}"])
         
         # Normalize for cosine similarity
         faiss.normalize_L2(query_embedding)
