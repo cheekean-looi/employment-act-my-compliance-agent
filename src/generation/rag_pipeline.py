@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from ..retriever.hybrid_retriever import HybridRetriever
 from .prompt_templates import PromptTemplates, Response
-from .guardrails import EmploymentActGuardrails, GuardrailsResult
+from .guardrails import ProductionGuardrailsEngine, GuardrailResult
 
 
 @dataclass
@@ -51,7 +51,7 @@ class EmploymentActRAG:
         self.prompt_templates = PromptTemplates()
         
         if config.enable_guardrails:
-            self.guardrails = EmploymentActGuardrails()
+            self.guardrails = ProductionGuardrailsEngine()
         else:
             self.guardrails = None
         
@@ -71,7 +71,7 @@ class EmploymentActRAG:
             if chunk.get('score', 0.0) >= self.config.min_context_score
         ]
     
-    def _estimate_confidence(self, chunks: List[Dict[str, Any]], guardrails_result: Optional[GuardrailsResult]) -> float:
+    def _estimate_confidence(self, chunks: List[Dict[str, Any]], guardrails_result: Optional[GuardrailResult]) -> float:
         """Estimate confidence score based on retrieval quality and guardrails.
         
         Args:
@@ -159,7 +159,7 @@ class EmploymentActRAG:
         
         return full_prompt
     
-    def handle_refusal(self, query: str, guardrails_result: GuardrailsResult) -> Dict[str, Any]:
+    def handle_refusal(self, query: str, guardrails_result: GuardrailResult) -> Dict[str, Any]:
         """Handle refusal cases based on guardrails.
         
         Args:
@@ -246,6 +246,20 @@ class EmploymentActRAG:
                     existing_flags = set(response_data.get('safety_flags', []))
                     guardrails_flags = set(retrieval_result['guardrails_result'].safety_flags)
                     response_data['safety_flags'] = list(existing_flags.union(guardrails_flags))
+                    
+                    # Add structured guardrails report for audit
+                    if hasattr(retrieval_result['guardrails_result'], 'report') and retrieval_result['guardrails_result'].report:
+                        response_data['guardrails_report'] = {
+                            'timestamp': retrieval_result['guardrails_result'].report.timestamp,
+                            'decision': retrieval_result['guardrails_result'].report.decision,
+                            'confidence': retrieval_result['guardrails_result'].report.confidence,
+                            'processing_time_ms': retrieval_result['guardrails_result'].report.processing_time_ms,
+                            'input_flags': retrieval_result['guardrails_result'].report.input_flags,
+                            'citations_valid': retrieval_result['guardrails_result'].report.citations_valid,
+                            'invalid_citations': retrieval_result['guardrails_result'].report.invalid_citations,
+                            'numeric_out_of_bounds': retrieval_result['guardrails_result'].report.numeric_out_of_bounds,
+                            'config_version': retrieval_result['guardrails_result'].report.config_version
+                        }
                 
                 return response_data
                 
@@ -274,6 +288,17 @@ class EmploymentActRAG:
                 'should_escalate': retrieval_result['guardrails_result'].should_escalate if retrieval_result['guardrails_result'] else False,
                 'safety_flags': retrieval_result['guardrails_result'].safety_flags if retrieval_result['guardrails_result'] else []
             }
+            
+            # Add guardrails report to mock response too
+            if retrieval_result['guardrails_result'] and hasattr(retrieval_result['guardrails_result'], 'report') and retrieval_result['guardrails_result'].report:
+                mock_response['guardrails_report'] = {
+                    'timestamp': retrieval_result['guardrails_result'].report.timestamp,
+                    'decision': retrieval_result['guardrails_result'].report.decision,
+                    'confidence': retrieval_result['guardrails_result'].report.confidence,
+                    'processing_time_ms': retrieval_result['guardrails_result'].report.processing_time_ms,
+                    'input_flags': retrieval_result['guardrails_result'].report.input_flags,
+                    'config_version': retrieval_result['guardrails_result'].report.config_version
+                }
             
             return mock_response
 

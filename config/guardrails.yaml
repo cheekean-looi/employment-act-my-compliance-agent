@@ -1,0 +1,254 @@
+# Guardrails Configuration for Employment Act Malaysia Compliance Agent
+# Production-grade configuration with toggles, thresholds, and structured policies
+
+# Policy Classification Settings
+policy_classifier:
+  enabled: true
+  min_confidence: 0.8
+  
+  # Refusal categories with keywords and settings
+  categories:
+    legal_advice:
+      enabled: true
+      keywords:
+        - "give me legal advice"
+        - "give legal advice"
+        - "provide legal advice"
+        - "legal counsel"
+        - "sue"
+        - "lawsuit"
+        - "court case"
+        - "litigation"
+        - "attorney"
+        - "lawyer recommendation"
+        - "legal representation"
+        - "hire a lawyer"
+        - "should i hire"
+        - "fight my case"
+      refusal_template: |
+        I understand you're asking about legal advice, but I can only provide 
+        general information about Malaysia's Employment Act provisions. 
+        For specific legal advice, please consult with a qualified legal professional.
+      
+    guarantees:
+      enabled: true
+      keywords:
+        - "guarantee"
+        - "promise"
+        - "ensure"
+        - "definitely will"
+        - "absolutely"
+        - "certainly will happen"
+        - "guaranteed outcome"
+      refusal_template: |
+        I understand you're asking about guarantees, but I can only provide 
+        general information about Malaysia's Employment Act provisions. 
+        Outcomes depend on specific circumstances and current law.
+        
+    out_of_scope:
+      enabled: true
+      keywords:
+        - "criminal law"
+        - "family law"
+        - "property law"
+        - "contract law"
+        - "immigration law"
+        - "tax law"
+        - "company registration"
+        - "business license"
+        - "visa"
+        - "passport"
+      refusal_template: |
+        I understand you're asking about {topic}, but I can only provide 
+        information about Malaysia's Employment Act provisions. 
+        For other legal matters, please consult with relevant authorities.
+        
+    financial_advice:
+      enabled: true
+      keywords:
+        - "invest"
+        - "investment advice"
+        - "stock market"
+        - "trading"
+        - "financial planning"
+        - "insurance policy"
+        - "loan advice"
+      refusal_template: |
+        I can only provide information about employment compensation under 
+        Malaysia's Employment Act. For financial advice, please consult 
+        with qualified financial advisors.
+
+# PII Detection and Handling
+pii_scrubber:
+  enabled: true
+  mode: "mask"  # "mask" or "refuse"
+  
+  patterns:
+    email:
+      regex: '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+      placeholder: "[EMAIL_REDACTED]"
+      
+    phone_malaysia:
+      regex: '\b(?:\+?60|0)(?:1[0-46-9]|[3-9])\d{7,8}\b|(?:01[0-9])[- ]?\d{3,4}[- ]?\d{4}\b'
+      placeholder: "[PHONE_REDACTED]"
+      
+    ic_number:
+      regex: '\b\d{6}-\d{2}-\d{4}\b'
+      placeholder: "[IC_NUMBER_REDACTED]"
+      
+    nric:
+      regex: '\b[STFG]\d{7}[A-Z]\b'
+      placeholder: "[NRIC_REDACTED]"
+      
+    credit_card:
+      regex: '\b(?:\d{4}[-\s]?){3}\d{4}\b'
+      placeholder: "[CARD_NUMBER_REDACTED]"
+      
+    passport:
+      regex: '\b[A-Z]\d{8}\b'
+      placeholder: "[PASSPORT_REDACTED]"
+  
+  refusal_message: |
+    I notice your message contains personal information. For your privacy and security, 
+    please avoid sharing personal details like phone numbers, email addresses, or ID numbers. 
+    I can help with general Employment Act questions without needing personal information.
+
+# Output Validation
+output_validation:
+  enabled: true
+  
+  # Citation validation
+  citation_validation:
+    enabled: true
+    require_valid_sections: true
+    corpus_store_path: "data/indices/store.pkl"  # Path to load valid sections
+    
+  # Numeric sanity checking
+  numeric_validation:
+    enabled: true
+    bounds:
+      annual_leave:
+        min: 8
+        max: 60
+        unit: "days"
+      sick_leave:
+        min: 14
+        max: 365
+        unit: "days"
+      maternity_leave:
+        min: 60
+        max: 98
+        unit: "days"
+      notice_period:
+        min: 1
+        max: 16
+        unit: "weeks"
+      daily_hours:
+        min: 1
+        max: 12
+        unit: "hours"
+      weekly_hours:
+        min: 1
+        max: 72
+        unit: "hours"
+      overtime_rate:
+        min: 1.0
+        max: 3.0
+        unit: "multiplier"
+      service_years:
+        min: 0
+        max: 60
+        unit: "years"
+        
+  # Hallucination detection patterns
+  hallucination_patterns:
+    enabled: true
+    patterns:
+      - "section ea-999"
+      - "section ea-0"
+      - "triple compensation"
+      - "365 days leave"
+      - "unlimited overtime"
+      - "section ea-[a-z]+\\d{3,}"
+      
+  # Inappropriate advice detection
+  inappropriate_advice:
+    enabled: true
+    patterns:
+      - "you should sue"
+      - "definitely file a lawsuit"
+      - "guaranteed to win"
+      - "i promise"
+      - "i guarantee"
+      - "this will definitely"
+
+# Context Support Scoring (for future implementation)
+context_support:
+  enabled: false  # TODO: Implement embeddings-based support scoring
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  similarity_threshold: 0.7
+  min_supported_sentences: 2
+
+# Logging and Observability
+logging:
+  enabled: true
+  log_level: "INFO"
+  
+  # What to log (never log raw PII)
+  log_triggered_rules: true
+  log_confidence_scores: true
+  log_processing_time: true
+  log_pii_flags_only: true  # Never log actual PII content
+  
+  # Structured reporting
+  structured_reports: true
+  report_format: "json"
+
+# Performance Settings
+performance:
+  max_processing_time_seconds: 30
+  enable_caching: true
+  cache_ttl_minutes: 60
+
+# Feature Toggles for A/B Testing
+feature_toggles:
+  strict_citation_validation: true
+  enhanced_numeric_checking: true
+  context_aware_refusals: false
+  experimental_ml_classifier: false
+
+# Escalation Rules
+escalation:
+  enabled: true
+  
+  triggers:
+    - multiple_policy_violations
+    - invalid_citations_detected
+    - numeric_claims_out_of_bounds
+    - repeated_pii_attempts
+    
+  escalation_message: |
+    This query requires additional review. Please contact our support team 
+    for assistance with complex employment law questions.
+
+# Audit and Compliance
+audit:
+  enabled: true
+  retention_days: 30
+  
+  # What to audit (privacy-safe)
+  audit_fields:
+    - timestamp
+    - prompt_hash
+    - triggered_rules
+    - decision
+    - confidence_scores
+    - processing_time
+    # Never audit: raw prompts, PII content, personal identifiers
+
+# Version and Metadata
+metadata:
+  version: "1.0.0"
+  last_updated: "2024-01-15"
+  employment_act_version: "2022"
+  config_schema_version: "1.0"
