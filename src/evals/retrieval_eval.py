@@ -341,8 +341,8 @@ def main():
     parser.add_argument('--gold', required=True, help='Path to gold standard JSONL file')
     parser.add_argument('--faiss', required=True, help='Path to FAISS index')
     parser.add_argument('--store', required=True, help='Path to store pickle file')
-    parser.add_argument('--embedding-model', default="intfloat/e5-large-v2")
-    parser.add_argument('--reranker-model', default="cross-encoder/ms-marco-MiniLM-L-12-v2")
+    parser.add_argument('--embedding-model', default="BAAI/bge-m3")
+    parser.add_argument('--reranker-model', default="cross-encoder/ms-marco-MiniLM-L-2-v2")
     parser.add_argument('--top-k', type=int, default=20, help='Number of results to retrieve')
     parser.add_argument('--output', help='Path to save detailed results JSON')
     

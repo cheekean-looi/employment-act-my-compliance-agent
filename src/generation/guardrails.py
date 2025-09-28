@@ -770,7 +770,9 @@ class ProductionGuardrailsEngine:
         }
         
         # Never log actual text content
-        logger.info(f"Guardrails processing: {json.dumps(log_entry)}")
+        # Temporarily disable this logging to debug structlog conflicts
+        # logger.info(f"Guardrails processing: {json.dumps(log_entry)}")
+        print(f"Guardrails processing: {json.dumps(log_entry)}")
     
     def get_report_json(self, report: GuardrailsReport) -> str:
         """Get JSON representation of report for audit."""

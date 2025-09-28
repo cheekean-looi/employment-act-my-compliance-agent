@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# python src/ingest/build_index.py --in data/processed/chunks.jsonl --faiss data/indices/faiss.index --store data/indices/store.pkl --model intfloat/e5-large-v2 --gpu --verify
+# python src/ingest/build_index.py --in data/processed/chunks.jsonl --faiss data/indices/faiss.index --store data/indices/store.pkl --model BAAI/bge-m3 --gpu --verify
 """
 Build search indices (BM25 + FAISS) for Employment Act chunks.
 Creates both sparse (BM25) and dense (FAISS) indices for hybrid retrieval.
@@ -64,7 +64,7 @@ def create_bm25_index(chunks: List[Dict[str, Any]]) -> BM25Okapi:
     return bm25
 
 
-def create_dense_embeddings(chunks: List[Dict[str, Any]], model_name: str = "intfloat/e5-large-v2") -> np.ndarray:
+def create_dense_embeddings(chunks: List[Dict[str, Any]], model_name: str = "BAAI/bge-m3") -> np.ndarray:
     """Create dense embeddings using sentence transformers."""
     print(f"Creating dense embeddings with {model_name}...")
     
@@ -195,7 +195,7 @@ def build_indices(
     input_file: Path,
     faiss_path: Path,
     store_path: Path,
-    embedding_model: str = "intfloat/e5-large-v2",
+    embedding_model: str = "BAAI/bge-m3",
     use_gpu: bool = False,
     force: bool = False,
     bm25_rebuild: bool = False
@@ -311,7 +311,7 @@ def main():
                         help='Output path for FAISS index file')
     parser.add_argument('--store', dest='store_path', required=True,
                         help='Output path for metadata and BM25 index (pickle file)')
-    parser.add_argument('--model', default="intfloat/e5-large-v2",
+    parser.add_argument('--model', default="BAAI/bge-m3",
                         help='Sentence transformer model for embeddings')
     parser.add_argument('--gpu', action='store_true',
                         help='Use GPU for FAISS index (if available)')

@@ -52,6 +52,7 @@ CRITICAL REQUIREMENTS:
 4. Output must be valid JSON with the exact schema specified
 5. Confidence score must reflect certainty in the answer based on context quality
 6. Flag for escalation if question is complex or context is insufficient
+7. If no valid section_id appears in CONTEXT, return the insufficient_context JSON template
 
 CITATION FORMAT:
 - Use exact section IDs from the context (e.g., "EA-2022-15(1)", "Section 25A")
@@ -63,6 +64,19 @@ RESPONSE SCHEMA:
   "answer": "Your detailed answer here",
   "citations": [{"section_id": "EA-2022-15(1)", "snippet": "relevant text..."}],
   "confidence": 0.85,
+  "should_escalate": false,
+  "safety_flags": []
+}
+
+EXAMPLE RESPONSE:
+{
+  "answer": "According to the Employment Act 2022, employees are entitled to annual leave based on their length of service. For employees with less than 2 years of service, they receive 8 days of annual leave per year. For those with 2-5 years of service, they get 12 days annually. Employees with more than 5 years of service are entitled to 16 days of annual leave per year.",
+  "citations": [
+    {"section_id": "EA-2022-60E(1)", "snippet": "An employee shall be entitled to paid annual leave of— (a) eight days in each calendar year, if he has been employed by the same employer for a period of less than two years"},
+    {"section_id": "EA-2022-60E(1)(b)", "snippet": "twelve days in each calendar year, if he has been employed by the same employer for a period of two years or more but less than five years"},
+    {"section_id": "EA-2022-60E(1)(c)", "snippet": "sixteen days in each calendar year, if he has been employed by the same employer for a period of five years or more"}
+  ],
+  "confidence": 0.95,
   "should_escalate": false,
   "safety_flags": []
 }
