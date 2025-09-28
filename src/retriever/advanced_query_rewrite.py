@@ -1,60 +1,95 @@
 """
 Advanced query rewriter with statutory term mapping for Employment Act Malaysia.
-Maps user language to precise legal terminology used in the Act.
+Maps user language (including common Malay terms) to precise legal terminology used in the Act.
+Config‑driven with safe defaults; preserves the original query and adds non‑destructive variants.
 """
 
+import os
 import re
+from pathlib import Path
 from typing import List, Dict, Tuple
+try:
+    import yaml
+except Exception:
+    yaml = None
 
 class AdvancedQueryRewriter:
     def __init__(self):
-        # Canonical statutory term mappings
-        self.statutory_terms = {
+        # If YAML is available and config present, load; otherwise use defaults
+        cfg = self._load_config()
+
+        # Canonical statutory term mappings (compiled)
+        self._compiled_terms: List[Tuple[re.Pattern, str]] = []
+        terms = cfg.get("statutory_terms", [])
+        if isinstance(terms, dict):
+            # backwards compatibility with dict form
+            terms = [{"pattern": k, "replacement": v} for k, v in terms.items()]
+        for item in terms:
+            try:
+                pat = re.compile(item["pattern"], re.IGNORECASE)
+                self._compiled_terms.append((pat, item["replacement"]))
+            except Exception:
+                continue
+
+        # Section-specific keywords for metadata filtering
+        self.section_keywords = cfg.get("section_keywords", {
             # Employment termination
             r"\bseverance\b|\bretrench(ment)?\b|\breadundan(cy|t)\b": "termination and lay-off benefits",
             r"\bmisconduct\b": "misconduct dismissal just cause",
             r"\bconstructive dismissal\b": "constructive dismissal termination",
             r"\bresign without notice\b": "resignation without notice termination",
             r"\bterminate.*pregnancy\b|\bpregnant.*terminate\b": "pregnant employee termination protection",
+            r"\bsack\b|\bfire\b|\bterminate\b|\bdismiss\b": "termination notice dismissal",
+            r"\bpoor performance\b|\bnon[- ]?perform(ing|ance)\b": "performance termination notice",
             
             # Leave and benefits
-            r"\bpregnan(t|cy)\b": "pregnancy maternity confinement pregnant employee",
+            r"\bpregnan(t|cy)\b|\bcuti bersalin\b": "pregnancy maternity confinement pregnant employee",
             r"\bmaternity leave\b": "maternity confinement benefit",
-            r"\bpaternity leave\b": "paternity benefit",
+            r"\bpaternity leave\b|\bcuti bapa\b": "paternity benefit",
             r"\bannual leave\b": "annual leave vacation",
-            r"\bsick leave\b": "sick leave medical absence",
+            r"\bsick leave\b|\bcuti sakit\b": "sick leave medical absence",
             r"\bemergency leave\b": "emergency leave compassionate",
             
             # Working conditions
-            r"\bworking hours\b": "hours of work normal hours",
-            r"\bovertime pay\b": "overtime payment rate of pay",
-            r"\brest day(s)?\b": "rest day weekly rest",
-            r"\bpublic holiday(s)?\b": "public holiday gazetted holiday",
+            r"\bworking hours\b|\bjam kerja\b": "hours of work normal hours",
+            r"\bovertime pay\b|\bkerja lebih masa\b": "overtime payment rate of pay",
+            r"\brest day(s)?\b|\bhari rehat\b": "rest day weekly rest",
+            r"\bpublic holiday(s)?\b|\bcuti umum\b": "public holiday gazetted holiday",
             
             # Compensation
             r"\bbonus(es)?\b": "bonus additional payment incentive",
-            r"\bsalary\b|\bwage(s)?\b": "wages payment of wages",
-            r"\bdeduct(ion)?\b": "deduction from wages authorized deduction",
+            r"\bsalary\b|\bwage(s)?\b|\bgaji\b": "wages payment of wages",
+            r"\bdeduct(ion)?\b|\bpotongan\b": "deduction from wages authorized deduction",
+            r"\badvance(s)? salary\b|\bsalary advance\b|\badvance of wages\b|\bpendahuluan gaji\b": "advance of wages payment rules",
             
             # Employment terms
-            r"\bprobation(ary)?\b|\btrial period\b": "probationary period trial employment contract",
+            r"\bprobation(ary)?\b|\btrial period\b|\btempoh percubaan\b": "probationary period trial employment contract",
             r"\bretirement age\b|\bminimum retirement\b": "minimum retirement age compulsory retirement mandatory",
-            r"\bnotice period\b": "period of notice termination notice",
+            r"\bnotice period\b|\bnotis berhenti\b": "period of notice termination notice",
             r"\bfemale employee\b": "female employee woman worker",
             r"\bcomplaint\b|\bgrievance\b": "complaint inquiry investigation",
             r"\bbonus.*entitle\b|\bentitle.*bonus\b": "additional payment bonus statutory entitlement",
-        }
+        })
         
         # Section-specific keywords for metadata filtering
         self.section_keywords = {
             "maternity": ["EA-37", "EA-38", "EA-40", "EA-42", "EA-44"],
             "pregnancy": ["EA-40", "EA-42", "EA-44"],
             "pregnant": ["EA-40", "EA-42", "EA-44"],
+            "paternity": ["EA-60FA"],
+            "paternity leave": ["EA-60FA"],
             "overtime": ["EA-60A", "EA-62"],
             "public holiday": ["EA-60D", "EA-60I"],
             "annual leave": ["EA-60E"],
             "sick leave": ["EA-60F"],
             "termination": ["EA-12", "EA-13", "EA-14"],
+            "dismiss": ["EA-12", "EA-13", "EA-14"],
+            "sack": ["EA-12", "EA-13", "EA-14"],
+            "notice": ["EA-12", "EA-14"],
+            "offer letter": ["EA-10", "EA-11"],
+            "advance": ["EA-22"],
+            "advance salary": ["EA-22"],
+            "advance of wages": ["EA-22"],
             "wages": ["EA-25", "EA-25A", "EA-27"],
             "working hours": ["EA-60", "EA-60A"],
             "rest day": ["EA-60A", "EA-61"],
@@ -69,12 +104,14 @@ class AdvancedQueryRewriter:
         }
         
         # Out-of-scope queries (no statutory basis)
-        self.out_of_scope_patterns = [
+        # Compile out-of-scope patterns
+        self._compiled_oos = [re.compile(pat, re.IGNORECASE) for pat in [
             r"\bcontractual bonus\b",
             r"\bperformance bonus\b", 
             r"\bincentive scheme\b",
             r"\bcommission\b",
-        ]
+            r"\bcriminal\b|\bdivorce\b|\bfamily court\b",
+        ] + cfg.get("out_of_scope", [])]
     
     def normalize_query(self, query: str) -> Tuple[str, List[str], bool]:
         """
@@ -90,21 +127,29 @@ class AdvancedQueryRewriter:
         is_out_of_scope = False
         
         # Check for out-of-scope patterns first
-        for pattern in self.out_of_scope_patterns:
-            if re.search(pattern, normalized, re.IGNORECASE):
+        for pat in self._compiled_oos:
+            if pat.search(normalized):
                 is_out_of_scope = True
                 break
         
         # Apply statutory term substitutions
-        for pattern, replacement in self.statutory_terms.items():
-            normalized = re.sub(pattern, replacement, normalized, flags=re.IGNORECASE)
+        for pat, replacement in self._compiled_terms:
+            normalized = pat.sub(replacement, normalized)
         
         # Extract priority sections based on topic
         for topic, sections in self.section_keywords.items():
             if topic in normalized:
                 priority_sections.extend(sections)
         
-        return normalized, list(set(priority_sections)), is_out_of_scope
+        # Normalize and unique section IDs
+        norm_sections = []
+        seen = set()
+        for sid in priority_sections:
+            s = self._normalize_section_id(sid)
+            if s and s not in seen:
+                norm_sections.append(s)
+                seen.add(s)
+        return normalized, norm_sections, is_out_of_scope
     
     def expand_query(self, query: str) -> List[str]:
         """Generate multiple query variants for comprehensive retrieval."""
@@ -156,6 +201,30 @@ class AdvancedQueryRewriter:
             return "RANKING_MISS"  # Found but ranked too low
         else:
             return "VOCAB_MISS"  # Terms didn't match
+
+    @staticmethod
+    def _normalize_section_id(section_id: str) -> str:
+        s = (section_id or "").strip().upper()
+        s = s.replace("SECTION ", "EA-") if s.startswith("SECTION ") else s
+        s = s.replace("EA- ", "EA-")
+        return s
+
+    @staticmethod
+    def _load_config() -> Dict:
+        """Load YAML config if available: env QUERY_REWRITE_CONFIG, ./config/query_rewrite.yaml, or project config.
+        Falls back to built-in defaults if yaml not available or file missing.
+        """
+        if yaml is None:
+            return {}
+        env_path = os.getenv("QUERY_REWRITE_CONFIG")
+        for candidate in [env_path, str(Path.cwd() / "config" / "query_rewrite.yaml"), str(Path(__file__).parent.parent.parent / "config" / "query_rewrite.yaml")]:
+            if candidate and Path(candidate).exists():
+                try:
+                    with open(candidate, "r") as f:
+                        return yaml.safe_load(f) or {}
+                except Exception:
+                    continue
+        return {}
 
 
 def create_enhanced_retrieval_function():
