@@ -1,0 +1,83 @@
+statutory_terms:
+  - pattern: "\\b(severance|retrench(ment)?|redundan(cy|t))\\b"
+    replacement: "termination and lay-off benefits"
+  - pattern: "\\bmisconduct\\b"
+    replacement: "misconduct dismissal just cause"
+  - pattern: "\\bconstructive dismissal\\b"
+    replacement: "constructive dismissal termination"
+  - pattern: "\\bresign without notice\\b"
+    replacement: "resignation without notice termination"
+  - pattern: "\\bsack\\b|\\bfire\\b|\\bterminate\\b|\\bdismiss\\b"
+    replacement: "termination notice dismissal"
+  - pattern: "\\bpoor performance\\b|\\bnon[- ]?perform(ing|ance)\\b"
+    replacement: "performance termination notice"
+
+  # Leave and benefits
+  - pattern: "\\bpregnan(t|cy)\\b|\\bcuti bersalin\\b"
+    replacement: "pregnancy maternity confinement"
+  - pattern: "\\bmaternity leave\\b"
+    replacement: "maternity confinement benefit"
+  - pattern: "\\bpaternity leave\\b|\\bcuti bapa\\b"
+    replacement: "paternity benefit"
+  - pattern: "\\bannual leave\\b|\\bcuti tahunan\\b"
+    replacement: "annual leave vacation"
+  - pattern: "\\bsick leave\\b|\\bcuti sakit\\b"
+    replacement: "sick leave medical absence"
+
+  # Working conditions
+  - pattern: "\\bworking hours\\b|\\bjam kerja\\b"
+    replacement: "hours of work normal hours"
+  - pattern: "\\bovertime\\b|\\bkerja lebih masa\\b"
+    replacement: "overtime payment rate of pay"
+  - pattern: "\\brest day(s)?\\b|\\bhari rehat\\b"
+    replacement: "rest day weekly rest"
+  - pattern: "\\bpublic holiday(s)?\\b|\\bcuti umum\\b"
+    replacement: "public holiday gazetted holiday"
+
+  # Compensation & deductions
+  - pattern: "\\bbonus(es)?\\b"
+    replacement: "bonus additional payment incentive"
+  - pattern: "\\bsalary\\b|\\bwage(s)?\\b|\\bgaji\\b"
+    replacement: "wages payment of wages"
+  - pattern: "\\bdeduct(ion)?\\b|\\bpotongan\\b"
+    replacement: "deduction from wages authorized deduction"
+  - pattern: "\\badvance(s)? salary\\b|\\bsalary advance\\b|\\badvance of wages\\b|\\bpendahuluan gaji\\b"
+    replacement: "advance of wages payment rules"
+
+  # Employment terms
+  - pattern: "\\bprobation(ary)?\\b|\\btrial period\\b|\\btempoh percubaan\\b"
+    replacement: "probationary period trial employment contract"
+  - pattern: "\\bretirement age\\b|\\bminimum retirement\\b"
+    replacement: "minimum retirement age compulsory retirement mandatory"
+  - pattern: "\\bnotice period\\b|\\bnotis berhenti\\b"
+    replacement: "period of notice termination notice"
+
+section_keywords:
+  maternity: ["EA-37", "EA-38", "EA-40", "EA-42", "EA-44"]
+  paternity: ["EA-60FA"]
+  annual leave: ["EA-60E"]
+  sick leave: ["EA-60F"]
+  overtime: ["EA-60A", "EA-62"]
+  public holiday: ["EA-60D", "EA-60I"]
+  rest day: ["EA-60A", "EA-61"]
+  working hours: ["EA-60", "EA-60A"]
+  termination: ["EA-12", "EA-13", "EA-14"]
+  dismiss: ["EA-12", "EA-13", "EA-14"]
+  notice: ["EA-12", "EA-14"]
+  probation: ["EA-11"]
+  bonus: ["EA-25A"]
+  wages: ["EA-25", "EA-25A", "EA-27"]
+  advance of wages: ["EA-22"]
+
+out_of_scope:
+  - "\\bvisa\\b|\\bimmigration\\b|\\bpassport\\b"
+  - "\\bcriminal\\b|\\bdivorce\\b|\\bfamily court\\b"
+  - "\\bcommission\\b|\\bincentive scheme\\b"
+
+weights:
+  priority_boost: 2.0
+  variants:
+    original: 1.0
+    normalized: 0.9
+    contextual: 0.8
+

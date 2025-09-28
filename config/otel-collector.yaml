@@ -1,0 +1,100 @@
+# OpenTelemetry Collector configuration for Employment Act Malaysia API
+# Collects traces, metrics, and logs from the API and exports to backends
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  
+  # Prometheus scraping for API metrics
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'employment-act-api'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['api:8001']
+          metrics_path: /metrics
+        
+        - job_name: 'redis-exporter'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['redis-exporter:9121']
+        
+        - job_name: 'node-exporter'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['node-exporter:9100']
+
+processors:
+  # Batch processor for better performance
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+  
+  # Resource processor to add common attributes
+  resource:
+    attributes:
+      - key: service.namespace
+        value: employment-act
+        action: insert
+      - key: deployment.environment
+        value: production
+        action: insert
+  
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    limit_mib: 512
+
+exporters:
+  # Export traces to Jaeger
+  jaeger:
+    endpoint: jaeger:14250
+    tls:
+      insecure: true
+  
+  # Export metrics to Prometheus
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: employment_act
+    const_labels:
+      service: employment-act-api
+  
+  # Export to Prometheus remote write (optional)
+  prometheusremotewrite:
+    endpoint: "http://prometheus:9090/api/v1/write"
+    tls:
+      insecure: true
+  
+  # Logging exporter for debugging
+  logging:
+    loglevel: info
+
+service:
+  pipelines:
+    # Traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [jaeger, logging]
+    
+    # Metrics pipeline
+    metrics:
+      receivers: [otlp, prometheus]
+      processors: [memory_limiter, resource, batch]
+      exporters: [prometheus, prometheusremotewrite]
+  
+  extensions: [health_check, pprof, zpages]
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  
+  pprof:
+    endpoint: 0.0.0.0:1777
+  
+  zpages:
+    endpoint: 0.0.0.0:55679
