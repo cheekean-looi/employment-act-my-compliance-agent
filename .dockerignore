@@ -1,0 +1,80 @@
+# Hour 2 Deployment - Docker ignore patterns
+
+# Git and version control
+.git/
+.gitignore
+*.md
+!README.md
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Model weights and large files (should be downloaded at runtime)
+outputs/
+*.bin
+*.safetensors
+*.h5
+*.ckpt
+*.pth
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+logs/
+tmp/
+
+# Test files and coverage
+.coverage
+.pytest_cache/
+.tox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Documentation build
+docs/_build/
+docs/build/
+
+# Local development files
+.env.local
+.env.development
+local_*
+
+# Data files that should be mounted as volumes
+data/raw_pdfs/*.pdf
+data/processed/*
+data/indices/*
+data/eval/*.jsonl
+
+# Keep example data structure but exclude actual content
+!data/raw_pdfs/.gitkeep
+!data/processed/.gitkeep  
+!data/indices/.gitkeep
+!data/eval/.gitkeep
