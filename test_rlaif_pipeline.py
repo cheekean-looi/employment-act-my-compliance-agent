@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive test script for Fixed Hour 5 implementation
+Comprehensive test script for RLAIF pipeline implementation
 Validates that all fixed components work correctly before full training.
 
 Tests include:
@@ -102,7 +102,7 @@ def test_enhanced_preference_pairs_generation():
         
         # Test enhanced preference pair generation
         cmd = [
-            "python", "src/training/make_pref_pairs_fixed.py",
+            "python", "src/training/make_pref_pairs.py",
             "--chunks", str(chunks_file),
             "--output", str(output_file),
             "--size", "6",  # Small size for testing
@@ -174,7 +174,7 @@ def test_dpo_training_with_persistent_eval():
         # Test that fixed DPO trainer imports work
         result = subprocess.run([
             "python", "-c", 
-            "from src.training.train_dpo_fixed import FixedEmploymentActDPOTrainer; print('Import successful')"
+            "from src.training.train_dpo import FixedEmploymentActDPOTrainer; print('Import successful')"
         ], capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -183,7 +183,7 @@ def test_dpo_training_with_persistent_eval():
         
         # Test help command
         result = subprocess.run([
-            "python", "src/training/train_dpo_fixed.py", "--help"
+            "python", "src/training/train_dpo.py", "--help"
         ], capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -216,7 +216,7 @@ def test_ppo_with_small_model():
             
             # Test PPO initialization with small model
             cmd = [
-                "python", "src/training/tiny_ppo_loop_fixed.py",
+                "python", "src/training/tiny_ppo_loop.py",
                 "--output", str(output_dir),
                 "--base-model", "HuggingFaceTB/SmolLM-135M-Instruct",
                 "--num-prompts", "4",  # Very small for testing
@@ -279,7 +279,7 @@ def test_pipeline_integration():
     try:
         # Test pipeline help
         result = subprocess.run([
-            "python", "run_hour5_training_fixed.py", "--help"
+            "python", "run_rlaif_training.py", "--help"
         ], capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -312,7 +312,7 @@ def test_memory_optimization():
     try:
         # Test that SmolLM is the default for PPO
         result = subprocess.run([
-            "python", "src/training/tiny_ppo_loop_fixed.py", "--help"
+            "python", "src/training/tiny_ppo_loop.py", "--help"
         ], capture_output=True, text=True)
         
         if result.returncode != 0:
@@ -331,7 +331,7 @@ def test_memory_optimization():
         try:
             # This should trigger the large model warning
             result = subprocess.run([
-                "python", "run_hour5_training_fixed.py",
+                "python", "run_rlaif_training.py",
                 "--chunks", test_chunks_file,
                 "--ppo-model", "meta-llama/Llama-3.1-8B-Instruct",
                 "--help"  # Use help to avoid actual execution
@@ -356,11 +356,11 @@ def test_file_structure():
     
     required_files = [
         "src/training/citation_utils.py",
-        "src/training/make_pref_pairs_fixed.py",
-        "src/training/train_dpo_fixed.py",
-        "src/training/tiny_ppo_loop_fixed.py",
-        "run_hour5_training_fixed.py",
-        "test_hour5_implementation_fixed.py"
+        "src/training/make_pref_pairs.py",
+        "src/training/train_dpo.py",
+        "src/training/tiny_ppo_loop.py",
+        "run_rlaif_training.py",
+        "test_rlaif_pipeline.py"
     ]
     
     for file_path in required_files:
@@ -376,10 +376,10 @@ def test_file_structure():
     # Check that files mention fixes
     fix_indicators = {
         "src/training/citation_utils.py": ["canonical", "EA-YYYY-NNN"],
-        "src/training/make_pref_pairs_fixed.py": ["FIXES APPLIED", "canonical"],
-        "src/training/train_dpo_fixed.py": ["FIXES APPLIED", "persistent eval"],
-        "src/training/tiny_ppo_loop_fixed.py": ["FIXES APPLIED", "value-head"],
-        "run_hour5_training_fixed.py": ["FIXES APPLIED", "canonical patterns"]
+        "src/training/make_pref_pairs.py": ["FIXES APPLIED", "canonical"],
+        "src/training/train_dpo.py": ["FIXES APPLIED", "persistent eval"],
+        "src/training/tiny_ppo_loop.py": ["FIXES APPLIED", "value-head"],
+        "run_rlaif_training.py": ["FIXES APPLIED", "canonical patterns"]
     }
     
     for file_path, indicators in fix_indicators.items():
@@ -396,8 +396,8 @@ def test_file_structure():
 
 
 def run_all_tests():
-    """Run all Hour 5 fixed implementation tests."""
-    print("🚀 Running Hour 5 Fixed Implementation Tests\n")
+    """Run all RLAIF pipeline implementation tests."""
+    print("🚀 Running RLAIF Pipeline Implementation Tests\n")
     
     tests = [
         ("Fixed File Structure", test_file_structure),
@@ -427,7 +427,7 @@ def run_all_tests():
             failed_tests.append(test_name)
     
     print(f"\n{'='*60}")
-    print(f"Fixed Hour 5 Implementation Test Results: {passed}/{total} passed")
+    print(f"RLAIF Pipeline Implementation Test Results: {passed}/{total} passed")
     
     if failed_tests:
         print(f"\n❌ Failed tests:")
@@ -435,16 +435,16 @@ def run_all_tests():
             print(f"  - {test_name}")
     
     if passed == total:
-        print("🎉 All tests passed! Fixed Hour 5 implementation is ready.")
+        print("🎉 All tests passed! RLAIF pipeline implementation is ready.")
         print("\nNext steps:")
         print("1. Ensure you have completed Hour 4 SFT training")
-        print("2. Run: python run_hour5_training_fixed.py --chunks data/processed/chunks.jsonl --sft-model outputs/lora_sft")
-        print("3. Review the enhanced reports in outputs/hour5_fixed_*/")
+        print("2. Run: python run_rlaif_training.py --chunks data/processed/chunks.jsonl --sft-model outputs/lora_sft")
+        print("3. Review the enhanced reports in outputs/rlaif_*/")
         print("4. Check the canonical pattern coverage in logs")
         print("5. Use the enhanced labeling tools in tools/ directory")
         return True
     else:
-        print("⚠️ Some tests failed. Please fix issues before running fixed Hour 5 training.")
+        print("⚠️ Some tests failed. Please fix issues before running RLAIF training.")
         print("\nDiagnostic tips:")
         print("- Check that all fixed files are present and not corrupted")
         print("- Verify Python dependencies are installed (transformers, trl, peft)")

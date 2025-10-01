@@ -44,13 +44,13 @@ from trl import SFTTrainer
 
 try:
     from .eval_utils import load_stable_eval_subset
-    from .train_lora_production import QLoRAConfig, CitationEvaluationCallback, CitationEvaluator
+    from .train_lora import QLoRAConfig, CitationEvaluationCallback, CitationEvaluator
 except ImportError:
     # For standalone execution
     import sys
     sys.path.append(str(Path(__file__).parent))
     from eval_utils import load_stable_eval_subset
-    from train_lora_production import QLoRAConfig, CitationEvaluationCallback, CitationEvaluator
+    from train_lora import QLoRAConfig, CitationEvaluationCallback, CitationEvaluator
 
 
 class TRLSFTTrainer_Production:

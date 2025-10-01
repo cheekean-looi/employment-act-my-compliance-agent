@@ -1,252 +1,807 @@
 #!/usr/bin/env python3
-# python src/training/train_lora.py --train-data outputs/sft_dataset_train.jsonl --eval-data outputs/sft_dataset_eval.jsonl \utput-dir outputs/lora_sft --model-name "microsoft/DialoGPT-medium" --epochs 3 --batch-size 1 --learning-rate 2e-4 --lora-rank 16 --lora-alpha 32
+# python src/training/train_lora_production.py --train-data outputs/sft_dataset/sft_dataset_train.jsonl --eval-data outputs/sft_dataset/sft_dataset_eval.jsonl --output-dir outputs/lora_sft --model-name meta-llama/Llama-3.1-8B-Instruct
 """
-QLoRA Training Script for Employment Act Malaysia Compliance Agent
-Trains Llama-3.1-8B-Instruct with LoRA adapters on our SFT dataset.
+Production-grade QLoRA Training Script for Employment Act Malaysia Compliance Agent.
+Features: 4-bit quantization, label masking, citation evaluation, comprehensive artifacts.
 """
 
 import json
+import os
+import re
 import torch
+import numpy as np
+import matplotlib.pyplot as plt
 from pathlib import Path
-from datasets import Dataset
+from typing import Dict, List, Any, Optional, Tuple, Callable
+from dataclasses import dataclass, asdict
+from datetime import datetime
+import argparse
+import gc
+import platform
+import sys
+from packaging import version
+
+# ML imports
+from datasets import Dataset, load_dataset
 from transformers import (
     AutoTokenizer, 
     AutoModelForCausalLM,
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling
+    BitsAndBytesConfig,
+    DataCollatorForLanguageModeling,
+    set_seed
 )
-from peft import LoraConfig, get_peft_model, TaskType
-import argparse
-from typing import Dict, List
-import matplotlib.pyplot as plt
-import pandas as pd
+from peft import (
+    LoraConfig, 
+    get_peft_model, 
+    TaskType,
+    prepare_model_for_kbit_training,
+    PeftModel
+)
+import bitsandbytes as bnb
+from trl import SFTTrainer
+from transformers.integrations import TensorBoardCallback
+from transformers import TrainerCallback, TrainerState, TrainerControl, EarlyStoppingCallback
 
-class EmploymentActTrainer:
-    def __init__(self, 
-                 model_name: str = "Qwen/Qwen2.5-1.5B-Instruct",
-                 lora_rank: int = 16,
-                 lora_alpha: int = 32,
-                 lora_dropout: float = 0.1):
-        """Initialize trainer with model and LoRA configuration."""
+try:
+    from .schemas import TrainingConfig, EnvironmentInfo, EvaluationMetrics, CitationMetrics
+    from .eval_utils import load_stable_eval_subset
+except ImportError:
+    # For standalone execution
+    sys.path.append(str(Path(__file__).parent))
+    from schemas import TrainingConfig, EnvironmentInfo, EvaluationMetrics, CitationMetrics
+    from eval_utils import load_stable_eval_subset
+
+
+class CitationEvaluationCallback(TrainerCallback):
+    """Callback to evaluate citation metrics during training."""
+    
+    def __init__(self, evaluator: 'CitationEvaluator', eval_examples: List[Dict], output_dir: Path):
+        self.evaluator = evaluator
+        self.eval_examples = eval_examples[:30]  # Fixed 30 samples
+        self.output_dir = output_dir
+        self.citation_history = []
         
-        self.model_name = model_name
+        # Ensure output directory exists
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+    
+    def on_evaluate(self, args, state: TrainerState, control: TrainerControl, **kwargs):
+        """Run citation evaluation after each evaluation."""
+        try:
+            # Evaluate citation metrics
+            eval_result = self.evaluator.evaluate_examples(self.eval_examples)
+            
+            # Log to citation history
+            history_entry = {
+                "step": state.global_step,
+                "epoch": state.epoch,
+                "eval_loss": eval_result.eval_loss,
+                "citation_exact_match": eval_result.citation_exact_match,
+                "citation_partial_match": eval_result.citation_partial_match,
+                "avg_judge_score": eval_result.avg_judge_score,
+                "response_length_avg": eval_result.response_length_avg,
+                "valid_json_rate": eval_result.valid_json_rate,
+                "total_examples": eval_result.total_examples
+            }
+            
+            self.citation_history.append(history_entry)
+            
+            # Save to JSONL file
+            history_file = self.output_dir / "citation_eval_history.jsonl"
+            with open(history_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(history_entry) + '\n')
+            
+            # Log metrics
+            print(f"\n🎯 Citation Eval @ Step {state.global_step}:")
+            print(f"   Exact Match: {eval_result.citation_exact_match:.3f}")
+            print(f"   Partial Match: {eval_result.citation_partial_match:.3f}")
+            print(f"   Judge Score: {eval_result.avg_judge_score:.3f}")
+            
+        except Exception as e:
+            print(f"⚠️ Citation evaluation failed: {e}")
+
+
+@dataclass
+class QLoRAConfig:
+    """Configuration for QLoRA training."""
+    # Model settings - aligned to spec defaults
+    model_name: str = "meta-llama/Llama-3.1-8B-Instruct"  # Spec default
+    use_4bit: bool = True
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_use_double_quant: bool = True
+    
+    # LoRA settings
+    lora_rank: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.1
+    lora_bias: str = "none"
+    
+    # Training settings - stability improvements
+    num_epochs: int = 2  # Reduced for overfitting prevention
+    per_device_train_batch_size: int = 1
+    per_device_eval_batch_size: int = 1
+    gradient_accumulation_steps: int = 4
+    learning_rate: float = 1e-4  # More conservative LR
+    warmup_ratio: float = 0.1
+    weight_decay: float = 0.01
+    max_grad_norm: float = 1.0
+    lr_scheduler_type: str = "cosine"  # Cosine with warmup
+    
+    # Evaluation and saving
+    eval_steps: int = 50
+    save_steps: int = 100
+    logging_steps: int = 10
+    eval_strategy: str = "steps"
+    save_strategy: str = "steps"
+    load_best_model_at_end: bool = True
+    metric_for_best_model: str = "eval_loss"
+    early_stopping_patience: int = 3  # Early stopping
+    
+    # Hardware and precision
+    bf16: bool = True
+    fp16: bool = False
+    gradient_checkpointing: bool = True
+    dataloader_num_workers: int = 4
+    
+    # Tokenization
+    max_length: int = 2048
+    
+    # Modules to save
+    modules_to_save: Optional[List[str]] = None  # Can include ["lm_head"] if needed
+    
+    # Reproducibility
+    seed: int = 42
+    
+    # Reporting
+    report_to: Optional[List[str]] = None  # Can be ["wandb"] or ["tensorboard"] or both for multi-backend
+
+
+@dataclass  
+class EvaluationResult:
+    """Results from citation evaluation."""
+    eval_loss: float
+    citation_exact_match: float
+    citation_partial_match: float
+    citation_precision: float
+    citation_recall: float
+    citation_f1_score: float
+    avg_judge_score: float
+    response_length_avg: float
+    valid_json_rate: float
+    total_examples: int
+    # Dataset-level citation presence metrics (from validation)
+    citation_presence_rate: float = 0.0
+    individual_citation_presence_rate: float = 0.0
+
+
+class CitationEvaluator:
+    """Evaluates model responses for citation accuracy."""
+    
+    def __init__(self, tokenizer, model, valid_section_ids: set):
+        self.tokenizer = tokenizer
+        self.model = model
+        self.valid_section_ids = valid_section_ids
+        
+        # Citation extraction pattern
+        self.citation_pattern = r'\b(EA-\d{4}-\d+[A-Z]*(?:\(\d+\))?)\b'
+    
+    def extract_citations(self, text: str) -> List[str]:
+        """Extract citation section IDs from text."""
+        matches = re.findall(self.citation_pattern, text)
+        return list(set(matches))  # Remove duplicates
+    
+    def compute_citation_match(self, predicted_citations: List[str], 
+                             gold_citations: List[str]) -> Tuple[float, float]:
+        """Compute exact and partial citation match scores."""
+        if not gold_citations:
+            return 1.0 if not predicted_citations else 0.0, 1.0
+        
+        pred_set = set(predicted_citations)
+        gold_set = set(gold_citations)
+        
+        # Exact match: sets are identical
+        exact_match = 1.0 if pred_set == gold_set else 0.0
+        
+        # Partial match: intersection over union
+        if not pred_set and not gold_set:
+            partial_match = 1.0
+        elif not pred_set or not gold_set:
+            partial_match = 0.0
+        else:
+            intersection = len(pred_set & gold_set)
+            union = len(pred_set | gold_set)
+            partial_match = intersection / union
+        
+        return exact_match, partial_match
+    
+    def judge_response_quality(self, response: str, context_text: str) -> float:
+        """Lightweight judge scoring for response quality."""
+        # Simple heuristic-based scoring (can be replaced with LLM judge)
+        score = 0.0
+        
+        # Length appropriateness (not too short, not too long)
+        if 50 <= len(response) <= 500:
+            score += 0.3
+        
+        # Contains specific information (numbers, specific terms)
+        if re.search(r'\b\d+\b', response):
+            score += 0.2
+        
+        # Mentions Employment Act or legal terminology
+        legal_terms = ['employment act', 'section', 'entitled', 'shall', 'according to']
+        if any(term in response.lower() for term in legal_terms):
+            score += 0.3
+        
+        # Not too repetitive
+        words = response.lower().split()
+        if len(set(words)) / len(words) > 0.6:  # Lexical diversity
+            score += 0.2
+        
+        return min(score, 1.0)
+    
+    def evaluate_examples(self, eval_examples: List[Dict]) -> EvaluationResult:
+        """Evaluate model on held-out examples."""
+        print("🧪 Evaluating citation accuracy on held-out examples...")
+        
+        exact_matches = []
+        partial_matches = []
+        judge_scores = []
+        response_lengths = []
+        valid_json_count = 0
+        
+        for i, example in enumerate(eval_examples[:30]):  # Hour 4 requirement: 30 samples
+            instruction = example['instruction']
+            gold_citations = example['citations']
+            
+            # Generate response
+            try:
+                response = self._generate_response(instruction)
+                response_lengths.append(len(response))
+                
+                # Extract citations from response
+                predicted_citations = self.extract_citations(response)
+                
+                # Compute citation metrics
+                exact_match, partial_match = self.compute_citation_match(
+                    predicted_citations, gold_citations
+                )
+                exact_matches.append(exact_match)
+                partial_matches.append(partial_match)
+                
+                # Judge scoring
+                judge_score = self.judge_response_quality(response, example.get('context', ''))
+                judge_scores.append(judge_score)
+                
+                # Check if response looks like valid structured output
+                if any(term in response.lower() for term in ['section', 'according', 'entitled']):
+                    valid_json_count += 1
+                
+            except Exception as e:
+                print(f"⚠️ Error evaluating example {i}: {e}")
+                exact_matches.append(0.0)
+                partial_matches.append(0.0)
+                judge_scores.append(0.0)
+                response_lengths.append(0)
+        
+        # Calculate precision, recall, F1
+        precision_scores = []
+        recall_scores = []
+        
+        for exact_match, partial_match in zip(exact_matches, partial_matches):
+            # Use partial match as proxy for precision/recall
+            precision_scores.append(partial_match)
+            recall_scores.append(partial_match)
+        
+        avg_precision = np.mean(precision_scores)
+        avg_recall = np.mean(recall_scores)
+        f1_score = 2 * (avg_precision * avg_recall) / (avg_precision + avg_recall) if (avg_precision + avg_recall) > 0 else 0.0
+        
+        return EvaluationResult(
+            eval_loss=0.0,  # Will be filled by trainer
+            citation_exact_match=np.mean(exact_matches),
+            citation_partial_match=np.mean(partial_matches),
+            citation_precision=avg_precision,
+            citation_recall=avg_recall,
+            citation_f1_score=f1_score,
+            avg_judge_score=np.mean(judge_scores),
+            response_length_avg=np.mean(response_lengths),
+            valid_json_rate=valid_json_count / len(eval_examples[:30]),
+            total_examples=len(eval_examples[:30])
+        )
+    
+    def _generate_response(self, instruction: str) -> str:
+        """Generate response for a single instruction."""
+        # Create chat template
+        messages = [
+            {"role": "system", "content": "You are an expert on Malaysia Employment Act. Provide accurate answers with proper section citations."},
+            {"role": "user", "content": instruction}
+        ]
+        
+        # Apply chat template
+        prompt = self.tokenizer.apply_chat_template(
+            messages, 
+            tokenize=False, 
+            add_generation_prompt=True
+        )
+        
+        # Tokenize
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=1024
+        ).to(self.model.device)
+        
+        # Generate
+        with torch.no_grad():
+            outputs = self.model.generate(
+                **inputs,
+                max_new_tokens=256,
+                temperature=0.1,
+                do_sample=True,
+                top_p=0.9,
+                pad_token_id=self.tokenizer.eos_token_id
+            )
+        
+        # Decode response
+        response = self.tokenizer.decode(
+            outputs[0][inputs['input_ids'].shape[1]:], 
+            skip_special_tokens=True
+        )
+        
+        return response.strip()
+
+
+class ProductionQLoRATrainer:
+    """Production-grade QLoRA trainer with comprehensive evaluation."""
+    
+    def __init__(self, config: QLoRAConfig):
+        self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        print(f"Initializing Employment Act QLoRA Trainer")
-        print(f"Device: {self.device}")
-        print(f"Model: {model_name}")
+        # Set seeds for reproducibility
+        set_seed(config.seed)
+        torch.manual_seed(config.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(config.seed)
         
-        # Load tokenizer
-        print("Loading tokenizer...")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        print(f"🚀 Initializing Production QLoRA Trainer")
+        print(f"   Device: {self.device}")
+        print(f"   Model: {config.model_name}")
+        print(f"   Precision: {'BF16' if config.bf16 else 'FP16' if config.fp16 else 'FP32'}")
+        print(f"   4-bit Quantization: {config.use_4bit}")
+        print(f"   Learning Rate: {config.learning_rate}")
+        print(f"   Epochs: {config.num_epochs}")
+        print(f"   Scheduler: {config.lr_scheduler_type}")
         
-        # Load model with 4-bit quantization
-        print("Loading model with quantization...")
+        # Hardware detection and environment info
+        self.env_info = self._collect_environment_info()
+        self._detect_hardware()
+        self._auto_tune_memory_settings()
         
-        # Use Qwen instruction model
-        print(f"Using instruction-tuned model: {model_name}")
-            
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float32,  # Use float32 for MPS compatibility
-        )
+        # Initialize model and tokenizer
+        self.tokenizer = self._load_tokenizer()
+        self.model = self._load_model()
         
         # Configure LoRA
-        print(f"Setting up LoRA (rank={lora_rank}, alpha={lora_alpha}, dropout={lora_dropout})")
+        self.model = self._setup_lora()
         
-        # Set target modules based on model architecture
-        if "qwen" in model_name.lower():
-            target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # For Qwen
-        elif "llama" in model_name.lower():
-            target_modules = ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]  # For Llama
-        else:
-            target_modules = ["c_attn", "c_proj"]  # For DialoGPT
+        # Enable flash attention if available
+        self._enable_flash_attention()
+        
+        print(f"✅ Model initialized with {self.model.num_parameters():,} total parameters")
+        print(f"   Trainable parameters: {self.model.num_parameters(only_trainable=True):,}")
+        
+        trainable_ratio = self.model.num_parameters(only_trainable=True) / self.model.num_parameters() * 100
+        print(f"   Trainable ratio: {trainable_ratio:.2f}%")
+    
+    def _enable_flash_attention(self):
+        """Enable flash attention if available."""
+        try:
+            # Check if flash attention is available and working
+            if hasattr(self.model, 'config') and hasattr(self.model.config, 'attn_implementation'):
+                if self.model.config.attn_implementation == "flash_attention_2":
+                    print("⚡ Flash Attention 2 enabled")
+                else:
+                    print("🔧 Flash Attention not available, using standard attention")
+        except Exception as e:
+            print(f"⚠️ Flash Attention check failed: {e}")
+    
+    def _collect_environment_info(self) -> EnvironmentInfo:
+        """Collect comprehensive environment information."""
+        env_info = {
+            "cuda_available": torch.cuda.is_available(),
+            "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
+            "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+            "torch_version": torch.__version__,
+            "python_version": sys.version,
+            "platform": platform.platform(),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # GPU memory info
+        if torch.cuda.is_available():
+            gpu_memory = []
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                gpu_memory.append(props.total_memory / 1e9)
+            env_info["gpu_memory_gb"] = gpu_memory
+        
+        # Package versions
+        try:
+            import transformers
+            env_info["transformers_version"] = transformers.__version__
+        except ImportError:
+            env_info["transformers_version"] = "unknown"
+        
+        try:
+            import peft
+            env_info["peft_version"] = peft.__version__
+        except ImportError:
+            env_info["peft_version"] = "unknown"
+        
+        try:
+            import bitsandbytes
+            env_info["bitsandbytes_version"] = bitsandbytes.__version__
+        except ImportError:
+            env_info["bitsandbytes_version"] = None
+        
+        return EnvironmentInfo(**env_info)
+    
+    def _detect_hardware(self):
+        """Detect hardware and provide recommendations."""
+        if torch.cuda.is_available():
+            total_memory = sum(self.env_info.gpu_memory_gb or [])
+            print(f"🔧 GPU Memory: {total_memory:.1f} GB across {self.env_info.gpu_count} GPU(s)")
+            print(f"   CUDA Version: {self.env_info.cuda_version}")
             
-        lora_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=lora_rank,
-            lora_alpha=lora_alpha,
-            lora_dropout=lora_dropout,
-            target_modules=target_modules,
-            bias="none"
+            if total_memory < 12:
+                print("⚠️  Limited GPU memory detected. Consider:")
+                print("   - Reducing batch size")
+                print("   - Using gradient checkpointing (enabled)")
+                print("   - Using 4-bit quantization (enabled)")
+        else:
+            print("⚠️  No CUDA GPU detected. Training will be very slow on CPU.")
+    
+    def _auto_tune_memory_settings(self):
+        """Auto-tune memory settings based on available GPU memory."""
+        if not torch.cuda.is_available() or not self.env_info.gpu_memory_gb:
+            print("🔧 No GPU memory info available, using default settings")
+            return
+        
+        max_memory = max(self.env_info.gpu_memory_gb)
+        print(f"🔧 Auto-tuning for {max_memory:.1f}GB GPU memory")
+        
+        # Memory-based heuristics
+        if max_memory < 8:  # Less than 8GB - very conservative
+            self.config.per_device_train_batch_size = 1
+            self.config.gradient_accumulation_steps = max(16, self.config.gradient_accumulation_steps)
+            print(f"   Low memory: batch_size=1, grad_accum={self.config.gradient_accumulation_steps}")
+            
+        elif max_memory < 12:  # 8-12GB - conservative
+            self.config.per_device_train_batch_size = 1
+            self.config.gradient_accumulation_steps = max(8, self.config.gradient_accumulation_steps)
+            print(f"   Medium memory: batch_size=1, grad_accum={self.config.gradient_accumulation_steps}")
+            
+        elif max_memory > 20:  # >20GB - can be more aggressive
+            # Try larger batch size if user didn't specify
+            if self.config.per_device_train_batch_size == 1:  # Default value
+                self.config.per_device_train_batch_size = 2
+            self.config.gradient_accumulation_steps = max(2, self.config.gradient_accumulation_steps // 2)
+            print(f"   High memory: batch_size={self.config.per_device_train_batch_size}, grad_accum={self.config.gradient_accumulation_steps}")
+        
+        # Calculate and display effective batch size
+        effective_batch_size = self.config.per_device_train_batch_size * self.config.gradient_accumulation_steps
+        if torch.cuda.is_available():
+            effective_batch_size *= self.env_info.gpu_count
+        print(f"📊 Effective batch size: {effective_batch_size}")
+    
+    def _load_tokenizer(self) -> AutoTokenizer:
+        """Load and configure tokenizer."""
+        print("📝 Loading tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.config.model_name,
+            trust_remote_code=True,
+            use_fast=True
         )
         
-        self.model = get_peft_model(self.model, lora_config)
-        self.model.print_trainable_parameters()
+        # Configure padding
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
         
-        # Ensure model is in training mode and gradients are enabled
-        self.model.train()
-        for param in self.model.parameters():
-            if param.requires_grad:
-                param.requires_grad_(True)
+        tokenizer.padding_side = "right"  # Required for causal LM
+        
+        return tokenizer
     
-    def _format_prompt(self, instruction: str, input_text: str = "", output: str = "") -> str:
-        """Format prompt using proper chat template."""
+    def _load_model(self) -> AutoModelForCausalLM:
+        """Load model with quantization configuration."""
+        print("🤖 Loading model...")
         
-        if "qwen" in self.model_name.lower() or "llama" in self.model_name.lower():
-            # Use instruction-tuned model chat template
-            system_msg = "You are an expert on Malaysia Employment Act. Provide accurate, helpful answers with proper citations."
-            
-            if input_text.strip():
-                user_content = f"{instruction}\n\n{input_text}"
-            else:
-                user_content = instruction
-            
+        # Configure quantization
+        if self.config.use_4bit and torch.cuda.is_available():
+            quantization_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type=self.config.bnb_4bit_quant_type,
+                bnb_4bit_compute_dtype=getattr(torch, self.config.bnb_4bit_compute_dtype),
+                bnb_4bit_use_double_quant=self.config.bnb_4bit_use_double_quant,
+            )
+        else:
+            quantization_config = None
+            print("⚠️  4-bit quantization disabled (no CUDA or disabled in config)")
+        
+        # Load model
+        model = AutoModelForCausalLM.from_pretrained(
+            self.config.model_name,
+            quantization_config=quantization_config,
+            device_map="auto" if torch.cuda.is_available() else None,
+            trust_remote_code=True,
+            torch_dtype=torch.bfloat16 if self.config.bf16 else torch.float16,
+            attn_implementation="flash_attention_2" if torch.cuda.is_available() else "eager"
+        )
+        
+        # Prepare for k-bit training if using quantization
+        if quantization_config:
+            model = prepare_model_for_kbit_training(model)
+        
+        # Enable gradient checkpointing
+        if self.config.gradient_checkpointing:
+            model.gradient_checkpointing_enable()
+            model.config.use_cache = False  # Required when using gradient checkpointing
+        
+        return model
+    
+    def _setup_lora(self) -> PeftModel:
+        """Configure and apply LoRA."""
+        print("🔗 Setting up LoRA...")
+        
+        # Target modules for different model architectures
+        if "llama" in self.config.model_name.lower():
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        elif "qwen" in self.config.model_name.lower():
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        elif "mistral" in self.config.model_name.lower():
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+        else:
+            # Default fallback
+            target_modules = ["q_proj", "v_proj"]
+            print(f"⚠️  Unknown model architecture, using default target modules: {target_modules}")
+        
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=self.config.lora_rank,
+            lora_alpha=self.config.lora_alpha,
+            lora_dropout=self.config.lora_dropout,
+            bias=self.config.lora_bias,
+            target_modules=target_modules,
+            modules_to_save=self.config.modules_to_save,
+        )
+        
+        model = get_peft_model(self.model, lora_config)
+        
+        print(f"   LoRA rank: {self.config.lora_rank}")
+        print(f"   LoRA alpha: {self.config.lora_alpha}")
+        print(f"   Target modules: {target_modules}")
+        
+        return model
+    
+    def _load_datasets(self, train_path: Path, eval_path: Path) -> Tuple[Dataset, Dataset]:
+        """Load and preprocess datasets."""
+        print("📚 Loading datasets...")
+        
+        # Load JSONL files
+        train_dataset = load_dataset('json', data_files=str(train_path), split='train')
+        eval_dataset = load_dataset('json', data_files=str(eval_path), split='train')
+        
+        print(f"   Train examples: {len(train_dataset)}")
+        print(f"   Eval examples: {len(eval_dataset)}")
+        
+        return train_dataset, eval_dataset
+    
+    def _preprocess_function(self, examples):
+        """Preprocess examples with proper label masking."""
+        # System prompt for Employment Act assistant
+        system_prompt = "You are an expert on Malaysia Employment Act. Provide accurate answers with proper section citations."
+        
+        inputs = []
+        labels = []
+        
+        for instruction, output in zip(examples['instruction'], examples['output']):
+            # Create conversation
             messages = [
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_content}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": instruction},
+                {"role": "assistant", "content": output}
             ]
             
-            if output:
-                messages.append({"role": "assistant", "content": output})
-                # For training, we want the full conversation
-                prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
-            else:
-                # For inference, add generation prompt
-                prompt = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                
-        else:
-            # Fallback for other models
-            if input_text.strip():
-                prompt = f"Human: {instruction}\n{input_text}\nAssistant: "
-            else:
-                prompt = f"Human: {instruction}\nAssistant: "
-            
-            if output:
-                prompt += output
-        
-        return prompt
-    
-    def load_dataset(self, train_file: Path, eval_file: Path) -> tuple:
-        """Load and prepare training datasets."""
-        print(f"📚 Loading datasets...")
-        print(f"  Train: {train_file}")
-        print(f"  Eval:  {eval_file}")
-        
-        # Load train data
-        train_data = []
-        with open(train_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                train_data.append(json.loads(line.strip()))
-        
-        # Load eval data
-        eval_data = []
-        with open(eval_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                eval_data.append(json.loads(line.strip()))
-        
-        print(f"  Loaded {len(train_data)} training examples")
-        print(f"  Loaded {len(eval_data)} evaluation examples")
-        
-        return train_data, eval_data
-    
-    def preprocess_data(self, data: List[Dict], max_length: int = 1024) -> Dataset:
-        """Preprocess data for training."""
-        
-        def tokenize_function(examples):
-            prompts = []
-            for instruction, input_text, output in zip(
-                examples['instruction'], 
-                examples['input'], 
-                examples['output']
-            ):
-                prompt = self._format_prompt(instruction, input_text, output)
-                prompts.append(prompt)
+            # Apply chat template
+            full_text = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=False
+            )
             
             # Tokenize
             tokenized = self.tokenizer(
-                prompts,
+                full_text,
                 truncation=True,
-                padding=False,
-                max_length=max_length,
-                return_tensors=None
+                max_length=self.config.max_length,
+                padding=False
             )
             
-            # Set labels for language modeling
-            tokenized["labels"] = tokenized["input_ids"].copy()
+            # Create labels with masking (only train on assistant response)
+            input_ids = tokenized['input_ids']
+            labels_ids = input_ids.copy()
             
-            return tokenized
+            # Robust token-boundary label masking - tokenize separately then concatenate
+            try:
+                # 1. Tokenize system + user messages
+                system_user_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": instruction}
+                ]
+                
+                system_user_text = self.tokenizer.apply_chat_template(
+                    system_user_messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+                
+                # 2. Tokenize assistant response separately
+                assistant_message = [{"role": "assistant", "content": output}]
+                assistant_text = self.tokenizer.apply_chat_template(
+                    assistant_message,
+                    tokenize=False,
+                    add_generation_prompt=False
+                ).strip()
+                
+                # 3. Get token counts for each part
+                system_user_tokens = self.tokenizer(
+                    system_user_text,
+                    truncation=False,
+                    padding=False,
+                    add_special_tokens=False
+                )['input_ids']
+                
+                assistant_tokens = self.tokenizer(
+                    assistant_text,
+                    truncation=False,
+                    padding=False,
+                    add_special_tokens=False
+                )['input_ids']
+                
+                # 4. Mask labels for system+user span only
+                system_user_length = len(system_user_tokens)
+                
+                # Ensure we don't exceed the total length
+                mask_length = min(system_user_length, len(labels_ids))
+                for i in range(mask_length):
+                    labels_ids[i] = -100
+                    
+            except Exception as e:
+                # Fallback to string-based method if tokenize-separately fails
+                assistant_start = full_text.find("assistant")
+                if assistant_start != -1:
+                    assistant_tokens = self.tokenizer(
+                        full_text[:assistant_start],
+                        truncation=True,
+                        max_length=self.config.max_length,
+                        padding=False
+                    )['input_ids']
+                    
+                    for i in range(min(len(assistant_tokens), len(labels_ids))):
+                        labels_ids[i] = -100
+            
+            inputs.append(input_ids)
+            labels.append(labels_ids)
         
-        # Convert to HuggingFace dataset
-        dataset_dict = {
-            'instruction': [ex['instruction'] for ex in data],
-            'input': [ex.get('input', '') for ex in data],
-            'output': [ex['output'] for ex in data],
-            'citations': [ex.get('citations', []) for ex in data]
+        return {
+            'input_ids': inputs,
+            'labels': labels,
+            'attention_mask': [[1] * len(inp) for inp in inputs]
         }
-        
-        dataset = Dataset.from_dict(dataset_dict)
-        tokenized_dataset = dataset.map(
-            tokenize_function,
-            batched=True,
-            remove_columns=dataset.column_names
-        )
-        
-        return tokenized_dataset
     
-    def train(self, 
-              train_data: List[Dict], 
-              eval_data: List[Dict],
-              output_dir: Path,
-              num_epochs: int = 3,
-              batch_size: int = 4,
-              learning_rate: float = 2e-4,
-              eval_steps: int = 50,
-              save_steps: int = 100,
-              warmup_steps: int = 10,
-              gradient_checkpointing: bool = False):
-        """Train the model with QLoRA."""
+    def train(self, train_path: Path, eval_path: Path, output_dir: Path):
+        """Train the model with comprehensive evaluation."""
+        print(f"🏋️ Starting training...")
         
-        print(f"  Starting training...")
-        print(f"  Epochs: {num_epochs}")
-        print(f"  Batch size: {batch_size}")
-        print(f"  Learning rate: {learning_rate}")
-        print(f"  Output dir: {output_dir}")
+        # Load datasets
+        train_dataset, eval_dataset = self._load_datasets(train_path, eval_path)
         
         # Preprocess datasets
-        train_dataset = self.preprocess_data(train_data)
-        eval_dataset = self.preprocess_data(eval_data)
-        
-        # Training arguments
-        training_args = TrainingArguments(
-            output_dir=str(output_dir),
-            num_train_epochs=num_epochs,
-            per_device_train_batch_size=batch_size,
-            per_device_eval_batch_size=batch_size,
-            gradient_accumulation_steps=4,
-            optim="adamw_torch",
-            save_steps=save_steps,
-            logging_steps=10,
-            learning_rate=learning_rate,
-            weight_decay=0.001,
-            fp16=False,  # Disable for MPS compatibility
-            bf16=False,
-            max_grad_norm=1.0,
-            warmup_steps=warmup_steps,
-            group_by_length=True,
-            lr_scheduler_type="cosine",
-            eval_strategy="steps",
-            eval_steps=eval_steps,
-            save_strategy="steps",
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            greater_is_better=False,
-            report_to=[],  # Disable all reporting
-            gradient_checkpointing=gradient_checkpointing,
-            dataloader_pin_memory=False,
+        print("🔄 Preprocessing datasets...")
+        train_dataset = train_dataset.map(
+            self._preprocess_function,
+            batched=True,
+            remove_columns=train_dataset.column_names
+        )
+        eval_dataset = eval_dataset.map(
+            self._preprocess_function,
+            batched=True,
+            remove_columns=eval_dataset.column_names
         )
         
-        # Data collator with padding
+        # Training arguments
+        # Choose optimizer based on quantization
+        optim = "adamw_torch"  # Default
+        if self.config.use_4bit and torch.cuda.is_available():
+            optim = "adamw_bnb_8bit"  # Better for 4-bit quantization
+            print(f"🔧 Using adamw_bnb_8bit optimizer for 4-bit quantization")
+        else:
+            print(f"🔧 Using adamw_torch optimizer")
+        
+        training_args = TrainingArguments(
+            output_dir=str(output_dir),
+            num_train_epochs=self.config.num_epochs,
+            per_device_train_batch_size=self.config.per_device_train_batch_size,
+            per_device_eval_batch_size=self.config.per_device_eval_batch_size,
+            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
+            learning_rate=self.config.learning_rate,
+            lr_scheduler_type=self.config.lr_scheduler_type,
+            warmup_ratio=self.config.warmup_ratio,
+            weight_decay=self.config.weight_decay,
+            max_grad_norm=self.config.max_grad_norm,
+            logging_steps=self.config.logging_steps,
+            eval_steps=self.config.eval_steps,
+            save_steps=self.config.save_steps,
+            evaluation_strategy=self.config.eval_strategy,
+            save_strategy=self.config.save_strategy,
+            load_best_model_at_end=self.config.load_best_model_at_end,
+            metric_for_best_model=self.config.metric_for_best_model,
+            greater_is_better=False,  # For loss
+            bf16=self.config.bf16,
+            fp16=self.config.fp16,
+            gradient_checkpointing=self.config.gradient_checkpointing,
+            dataloader_num_workers=self.config.dataloader_num_workers,
+            remove_unused_columns=False,
+            report_to=self.config.report_to,
+            seed=self.config.seed,
+            optim=optim,  # Use appropriate optimizer
+            # Checkpointing
+            save_total_limit=3,  # Keep only 3 best checkpoints
+            resume_from_checkpoint=True,  # Enable resume
+        )
+        
+        # Data collator
         data_collator = DataCollatorForLanguageModeling(
             tokenizer=self.tokenizer,
             mlm=False,
-            pad_to_multiple_of=8,
+            pad_to_multiple_of=8
         )
         
-        # Initialize trainer
+        # Load the persistent eval subset with stable IDs
+        eval_subset_path = output_dir / "eval_subset.jsonl"
+        eval_examples_fallback = load_dataset('json', data_files=str(eval_path), split='train')
+        
+        eval_subset_examples = load_stable_eval_subset(
+            eval_subset_path, 
+            fallback_examples=eval_examples_fallback
+        )
+        
+        if eval_subset_path.exists():
+            print(f"📌 Loaded persistent eval subset with stable IDs from {eval_subset_path}")
+            print(f"   {len(eval_subset_examples)} examples with stable IDs")
+        else:
+            print("⚠️ No persistent eval subset found, generated stable subset from eval data")
+            print(f"   Created {len(eval_subset_examples)} examples with stable IDs")
+        
+        # Setup citation evaluation callback
+        valid_section_ids = set()
+        for example in eval_subset_examples:
+            if 'citations' in example:
+                valid_section_ids.update(example['citations'])
+        
+        evaluator = CitationEvaluator(self.tokenizer, self.model, valid_section_ids)
+        citation_callback = CitationEvaluationCallback(evaluator, eval_subset_examples, output_dir)
+        
+        # Early stopping callback
+        early_stopping = EarlyStoppingCallback(
+            early_stopping_patience=self.config.early_stopping_patience,
+            early_stopping_threshold=0.001  # Minimum improvement threshold
+        )
+        
+        # Trainer with callbacks
         trainer = Trainer(
             model=self.model,
             args=training_args,
@@ -254,180 +809,337 @@ class EmploymentActTrainer:
             eval_dataset=eval_dataset,
             tokenizer=self.tokenizer,
             data_collator=data_collator,
+            callbacks=[citation_callback, early_stopping],
         )
         
-        # Train the model
-        print("   Starting training...")
+        # Train
+        print("🚀 Starting training...")
         train_result = trainer.train()
         
-        # Save the final model
-        print("   Saving model...")
+        # Save model (PEFT adapter only)
+        print("💾 Saving model...")
         trainer.save_model()
-        trainer.save_state()
+        self.tokenizer.save_pretrained(output_dir)
         
-        # Save training metrics
-        metrics = train_result.metrics
-        with open(output_dir / "train_results.json", "w") as f:
-            json.dump(metrics, f, indent=2)
+        # Save training results
+        train_results = {
+            "train_runtime": train_result.metrics["train_runtime"],
+            "train_samples_per_second": train_result.metrics["train_samples_per_second"],
+            "train_loss": train_result.metrics["train_loss"],
+            "epoch": train_result.metrics["epoch"],
+        }
         
-        print(f"   Training completed!")
-        print(f"   Final train loss: {metrics.get('train_loss', 'N/A'):.4f}")
+        with open(output_dir / "train_results.json", 'w') as f:
+            json.dump(train_results, f, indent=2)
         
-        return trainer, metrics
-    
-    def evaluate_model(self, trainer, eval_data: List[Dict], output_dir: Path):
-        """Evaluate the trained model on held-out samples."""
-        print("   Evaluating model...")
+        # Final citation evaluation
+        print("🧪 Running final citation evaluation...")
+        eval_result = evaluator.evaluate_examples(eval_subset_examples)
+        eval_result.eval_loss = trainer.evaluate()['eval_loss']
         
-        # Run evaluation
-        eval_results = trainer.evaluate()
+        # Add dataset-level presence metrics from validation
+        try:
+            from .validate_dataset import SFTDatasetValidator
+            validator = SFTDatasetValidator()
+            examples_with_citations, _, individual_presence_rate = validator.validate_citation_presence_in_output(eval_subset_examples)
+            
+            # Calculate example-level presence rate
+            example_level_rate = (examples_with_citations / len(eval_subset_examples) * 100) if eval_subset_examples else 0.0
+            
+            # Add presence metrics to eval result
+            eval_result.citation_presence_rate = example_level_rate
+            eval_result.individual_citation_presence_rate = individual_presence_rate
+            
+            print(f"📊 Added dataset validation metrics: {example_level_rate:.1f}% examples with citations, {individual_presence_rate:.1f}% individual citations present")
+        except Exception as e:
+            print(f"⚠️ Could not add dataset validation metrics: {e}")
+            # Keep default values (0.0)
         
         # Save evaluation results
-        with open(output_dir / "eval_results.json", "w") as f:
+        eval_results = asdict(eval_result)
+        with open(output_dir / "eval_results.json", 'w') as f:
             json.dump(eval_results, f, indent=2)
         
-        # Test on a few examples
-        print("\n   Testing on sample examples:")
-        test_examples = eval_data[:5]  # First 5 examples
+        # Plot training curves
+        self._plot_training_curves(trainer, output_dir)
         
-        for i, example in enumerate(test_examples):
-            prompt = self._format_prompt(example['instruction'], example.get('input', ''))
-            
-            # Tokenize input
-            inputs = self.tokenizer.encode(prompt, return_tensors="pt").to(self.device)
-            
-            # Generate response with low temperature and repetition controls
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs,
-                    max_new_tokens=200,
-                    do_sample=True,
-                    temperature=0.1,  # Low temperature for focused output
-                    top_p=0.9,
-                    repetition_penalty=1.2,
-                    no_repeat_ngram_size=4,
-                    length_penalty=1.0,
-                    early_stopping=True,
-                    pad_token_id=self.tokenizer.eos_token_id
-                )
-            
-            # Decode response
-            response = self.tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
-            
-            print(f"\n--- Example {i+1} ---")
-            print(f"Question: {example['instruction']}")
-            print(f"Expected citations: {example.get('citations', [])}")
-            print(f"Generated: {response[:200]}...")
+        # Save comprehensive metadata
+        self._save_metadata(output_dir, train_results, eval_results)
         
-        return eval_results
+        # Plot citation curves
+        self._plot_citation_curves(output_dir)
+        
+        print(f"✅ Training complete!")
+        print(f"   Final train loss: {train_results['train_loss']:.4f}")
+        print(f"   Final eval loss: {eval_result.eval_loss:.4f}")
+        print(f"   Citation exact match: {eval_result.citation_exact_match:.2%}")
+        print(f"   Citation partial match: {eval_result.citation_partial_match:.2%}")
+        print(f"   Citation F1 score: {eval_result.citation_f1_score:.3f}")
+        print(f"   Judge score: {eval_result.avg_judge_score:.3f}")
+        print(f"\n📁 Artifacts saved to: {output_dir}")
+        print(f"   - adapter_model.safetensors")
+        print(f"   - adapter_config.json")
+        print(f"   - training_curves.png")
+        print(f"   - citation_eval_history.jsonl")
+        print(f"   - metadata.json")
+        
+        return trainer, eval_result
     
-    def plot_training_curves(self, output_dir: Path):
-        """Plot training loss curves."""
-        try:
-            # Load training logs
-            log_file = output_dir / "trainer_state.json"
-            if log_file.exists():
-                with open(log_file, 'r') as f:
-                    trainer_state = json.load(f)
-                
-                log_history = trainer_state.get('log_history', [])
-                
-                # Extract training and evaluation losses
-                train_steps = []
-                train_losses = []
-                eval_steps = []
-                eval_losses = []
-                
-                for log in log_history:
-                    if 'train_loss' in log:
-                        train_steps.append(log['step'])
-                        train_losses.append(log['train_loss'])
-                    if 'eval_loss' in log:
-                        eval_steps.append(log['step'])
-                        eval_losses.append(log['eval_loss'])
-                
-                # Create plot
-                plt.figure(figsize=(12, 6))
-                
-                if train_losses:
-                    plt.subplot(1, 2, 1)
-                    plt.plot(train_steps, train_losses, label='Training Loss', color='blue')
-                    plt.xlabel('Steps')
-                    plt.ylabel('Loss')
-                    plt.title('Training Loss')
-                    plt.legend()
-                    plt.grid(True)
-                
-                if eval_losses:
-                    plt.subplot(1, 2, 2)
-                    plt.plot(eval_steps, eval_losses, label='Evaluation Loss', color='red')
-                    plt.xlabel('Steps')
-                    plt.ylabel('Loss')
-                    plt.title('Evaluation Loss')
-                    plt.legend()
-                    plt.grid(True)
-                
-                plt.tight_layout()
-                plt.savefig(output_dir / "training_curves.png", dpi=300, bbox_inches='tight')
-                plt.close()
-                
-                print(f"📈 Training curves saved to {output_dir / 'training_curves.png'}")
-                
-        except Exception as e:
-            print(f"⚠️ Could not generate training curves: {e}")
+    def _plot_training_curves(self, trainer, output_dir: Path):
+        """Plot and save training curves."""
+        print("📊 Plotting training curves...")
+        
+        # Extract metrics from trainer state
+        log_history = trainer.state.log_history
+        
+        train_losses = []
+        eval_losses = []
+        steps = []
+        eval_steps = []
+        
+        for log in log_history:
+            if 'loss' in log:
+                train_losses.append(log['loss'])
+                steps.append(log['step'])
+            if 'eval_loss' in log:
+                eval_losses.append(log['eval_loss'])
+                eval_steps.append(log['step'])
+        
+        # Create plot
+        plt.figure(figsize=(12, 6))
+        
+        # Plot training loss
+        plt.subplot(1, 2, 1)
+        if train_losses:
+            plt.plot(steps, train_losses, label='Training Loss', color='blue')
+        if eval_losses and eval_steps:
+            plt.plot(eval_steps, eval_losses, label='Validation Loss', color='red', marker='o')
+        plt.xlabel('Steps')
+        plt.ylabel('Loss')
+        plt.title('Training and Validation Loss')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Plot learning rate if available
+        plt.subplot(1, 2, 2)
+        lrs = [log.get('learning_rate', 0) for log in log_history if 'learning_rate' in log]
+        lr_steps = [log['step'] for log in log_history if 'learning_rate' in log]
+        if lrs:
+            plt.plot(lr_steps, lrs, label='Learning Rate', color='green')
+            plt.xlabel('Steps')
+            plt.ylabel('Learning Rate')
+            plt.title('Learning Rate Schedule')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(output_dir / "training_curves.png", dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"   Training curves saved to {output_dir / 'training_curves.png'}")
+    
+    def _plot_citation_curves(self, output_dir: Path):
+        """Plot citation evaluation curves."""
+        history_file = output_dir / "citation_eval_history.jsonl"
+        
+        if not history_file.exists():
+            print("⚠️ No citation evaluation history found")
+            return
+        
+        # Load citation history
+        citation_data = []
+        with open(history_file, 'r') as f:
+            for line in f:
+                citation_data.append(json.loads(line.strip()))
+        
+        if not citation_data:
+            print("⚠️ No citation evaluation data found")
+            return
+        
+        # Extract data
+        steps = [d['step'] for d in citation_data]
+        exact_matches = [d['citation_exact_match'] for d in citation_data]
+        partial_matches = [d['citation_partial_match'] for d in citation_data]
+        judge_scores = [d['avg_judge_score'] for d in citation_data]
+        
+        # Create plot
+        plt.figure(figsize=(15, 5))
+        
+        # Citation exact match
+        plt.subplot(1, 3, 1)
+        plt.plot(steps, exact_matches, 'b-', marker='o', label='Exact Match')
+        plt.xlabel('Steps')
+        plt.ylabel('Citation Exact Match')
+        plt.title('Citation Exact Match over Training')
+        plt.grid(True, alpha=0.3)
+        plt.ylim(0, 1)
+        
+        # Citation partial match (IoU)
+        plt.subplot(1, 3, 2)
+        plt.plot(steps, partial_matches, 'g-', marker='s', label='Partial Match (IoU)')
+        plt.xlabel('Steps')
+        plt.ylabel('Citation Partial Match (IoU)')
+        plt.title('Citation IoU over Training')
+        plt.grid(True, alpha=0.3)
+        plt.ylim(0, 1)
+        
+        # Judge scores
+        plt.subplot(1, 3, 3)
+        plt.plot(steps, judge_scores, 'r-', marker='^', label='Judge Score')
+        plt.xlabel('Steps')
+        plt.ylabel('Judge Score')
+        plt.title('Response Quality Score over Training')
+        plt.grid(True, alpha=0.3)
+        plt.ylim(0, 1)
+        
+        plt.tight_layout()
+        plt.savefig(output_dir / "citation_curves.png", dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"   Citation curves saved to {output_dir / 'citation_curves.png'}")
+    
+    def _save_metadata(self, output_dir: Path, train_results: Dict, eval_results: Dict):
+        """Save comprehensive training metadata."""
+        
+        # Check for TensorBoard run directory
+        tensorboard_run_dir = None
+        if self.config.report_to and "tensorboard" in self.config.report_to:
+            # TensorBoard typically creates runs/[timestamp] directory
+            runs_dir = output_dir / "runs"
+            if runs_dir.exists():
+                # Get the most recent run directory
+                run_dirs = [d for d in runs_dir.iterdir() if d.is_dir()]
+                if run_dirs:
+                    tensorboard_run_dir = str(max(run_dirs, key=lambda x: x.stat().st_mtime).relative_to(output_dir))
+        
+        metadata = {
+            "training_info": {
+                "timestamp": datetime.now().isoformat(),
+                "config": asdict(self.config),
+                "model_name": self.config.model_name,
+                "total_parameters": self.model.num_parameters(),
+                "trainable_parameters": self.model.num_parameters(only_trainable=True),
+                "trainable_ratio": self.model.num_parameters(only_trainable=True) / self.model.num_parameters() * 100,
+                "effective_batch_size": self.config.per_device_train_batch_size * self.config.gradient_accumulation_steps,
+                "device": str(self.device),
+                "logging_backend": self.config.report_to,
+                "tensorboard_run_dir": tensorboard_run_dir,
+            },
+            "environment": asdict(self.env_info),
+            "results": {
+                "train": train_results,
+                "eval": eval_results,
+            },
+            "validation_metrics": {
+                "citation_presence_rate": eval_results.get("citation_presence_rate"),
+                "individual_citation_presence_rate": eval_results.get("individual_citation_presence_rate"),
+                "citation_exact_match": eval_results.get("citation_exact_match"),
+                "citation_iou": eval_results.get("citation_iou"),
+            },
+            "artifacts": {
+                "adapter_config": "adapter_config.json",
+                "adapter_weights": "adapter_model.safetensors",
+                "tokenizer": "tokenizer files",
+                "training_curves": "training_curves.png",
+                "citation_curves": "citation_curves.png",
+                "citation_eval_history": "citation_eval_history.jsonl",
+                "train_results": "train_results.json",
+                "eval_results": "eval_results.json",
+                "tensorboard_logs": tensorboard_run_dir if tensorboard_run_dir else None,
+            }
+        }
+        
+        with open(output_dir / "metadata.json", 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        print(f"   Metadata saved to {output_dir / 'metadata.json'}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train Employment Act QLoRA model")
-    parser.add_argument('--train-data', required=True, help='Training JSONL file')
-    parser.add_argument('--eval-data', required=True, help='Evaluation JSONL file')
-    parser.add_argument('--output-dir', required=True, help='Output directory for model and logs')
-    parser.add_argument('--model-name', default="Qwen/Qwen2.5-1.5B-Instruct", 
-                       help='Base model name')
-    parser.add_argument('--epochs', type=int, default=3, help='Number of training epochs')
-    parser.add_argument('--batch-size', type=int, default=4, help='Training batch size')
-    parser.add_argument('--learning-rate', type=float, default=2e-4, help='Learning rate')
+    parser = argparse.ArgumentParser(description="Production QLoRA Training")
+    
+    # Data arguments
+    parser.add_argument('--train-data', type=Path, required=True, help='Training JSONL file')
+    parser.add_argument('--eval-data', type=Path, required=True, help='Evaluation JSONL file')
+    parser.add_argument('--output-dir', type=Path, required=True, help='Output directory')
+    
+    # Model arguments
+    parser.add_argument('--model-name', default="meta-llama/Llama-3.1-8B-Instruct", help='Base model name')
+    parser.add_argument('--bits', type=int, choices=[4, 8, 16], default=4, help='Quantization bits')
+    
+    # LoRA arguments
     parser.add_argument('--lora-rank', type=int, default=16, help='LoRA rank')
     parser.add_argument('--lora-alpha', type=int, default=32, help='LoRA alpha')
+    parser.add_argument('--lora-dropout', type=float, default=0.1, help='LoRA dropout')
+    
+    # Training arguments
+    parser.add_argument('--epochs', type=int, default=2, help='Number of epochs (Hour 4 default: 2)')
+    parser.add_argument('--batch-size', type=int, default=1, help='Per device batch size')
+    parser.add_argument('--grad-accumulation', type=int, default=4, help='Gradient accumulation steps (auto-tuned by memory)')
+    parser.add_argument('--learning-rate', type=float, default=1e-4, help='Learning rate (Hour 4 default: 1e-4)')
+    parser.add_argument('--warmup-ratio', type=float, default=0.1, help='Warmup ratio')
+    parser.add_argument('--eval-steps', type=int, default=50, help='Evaluation steps')
+    parser.add_argument('--save-steps', type=int, default=100, help='Save steps')
+    parser.add_argument('--max-length', type=int, default=2048, help='Maximum sequence length')
+    parser.add_argument('--early-stopping-patience', type=int, default=3, help='Early stopping patience')
+    
+    # Precision arguments
+    parser.add_argument('--bf16', action='store_true', default=True, help='Use bfloat16 precision (default)')
+    parser.add_argument('--fp16', action='store_true', help='Use float16 precision')
+    parser.add_argument('--grad-ckpt', action='store_true', default=True, help='Use gradient checkpointing (default)')
+    parser.add_argument('--report-to', action='append', choices=['wandb', 'tensorboard'], default=None,
+                        help='Logging backend(s): "wandb" for cloud tracking, "tensorboard" for local logs. Can be specified multiple times for multi-backend logging.')
+    
+    # Other arguments
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--use-sfttrainer', action='store_true', help='Use TRL SFTTrainer instead of custom trainer (easier auditing)')
     
     args = parser.parse_args()
     
-    # Create output directory
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Initialize trainer
-    trainer_obj = EmploymentActTrainer(
+    # Create config
+    config = QLoRAConfig(
         model_name=args.model_name,
+        use_4bit=(args.bits == 4),
         lora_rank=args.lora_rank,
-        lora_alpha=args.lora_alpha
-    )
-    
-    # Load datasets
-    train_data, eval_data = trainer_obj.load_dataset(
-        Path(args.train_data), 
-        Path(args.eval_data)
-    )
-    
-    # Train the model
-    trainer, metrics = trainer_obj.train(
-        train_data=train_data,
-        eval_data=eval_data,
-        output_dir=output_dir,
+        lora_alpha=args.lora_alpha,
+        lora_dropout=args.lora_dropout,
         num_epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate
+        per_device_train_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accumulation,
+        learning_rate=args.learning_rate,
+        warmup_ratio=args.warmup_ratio,
+        eval_steps=args.eval_steps,
+        save_steps=args.save_steps,
+        max_length=args.max_length,
+        bf16=args.bf16,
+        fp16=args.fp16,
+        gradient_checkpointing=args.grad_ckpt,
+        seed=args.seed,
+        report_to=args.report_to,  # Already a list from argparse append action
+        early_stopping_patience=args.early_stopping_patience,
     )
     
-    # Evaluate the model
-    eval_results = trainer_obj.evaluate_model(trainer, eval_data, output_dir)
+    # Create output directory
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Plot training curves
-    trainer_obj.plot_training_curves(output_dir)
+    # Initialize trainer and train
+    if args.use_sfttrainer:
+        # Use TRL SFTTrainer path for easier auditing
+        print("🔄 Using TRL SFTTrainer path for easier auditing")
+        try:
+            from .train_lora_trl import TRLSFTTrainer_Production
+        except ImportError:
+            # For standalone execution
+            from train_lora_trl import TRLSFTTrainer_Production
+        trainer = TRLSFTTrainer_Production(config)
+    else:
+        # Use custom production trainer (default)
+        trainer = ProductionQLoRATrainer(config)
     
-    print(f"\n  Training complete!")
-    print(f"   Model saved to: {output_dir}")
-    print(f"   Final eval loss: {eval_results.get('eval_loss', 'N/A'):.4f}")
+    trainer.train(args.train_data, args.eval_data, args.output_dir)
+    
+    print(f"🎉 Training completed successfully!")
+    print(f"📁 Artifacts saved to: {args.output_dir}")
 
 
 if __name__ == "__main__":

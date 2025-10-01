@@ -16,7 +16,7 @@ This script orchestrates the complete Hour 5 training pipeline:
 4. Generate evaluation reports with enhanced metrics and win-rate deltas
 
 Usage:
-    python run_hour5_training_fixed.py --chunks data/processed/chunks.jsonl --sft-model outputs/lora_sft
+    python run_rlaif_training.py --chunks data/processed/chunks.jsonl --sft-model outputs/lora_sft
 
 Features implemented:
 - ✅ Canonical citation patterns (EA-YYYY-NNN[L]*[(N)])
@@ -40,11 +40,11 @@ import sys
 import os
 
 
-class FixedHour5TrainingPipeline:
+class RLAIFTrainingPipeline:
     def __init__(self, base_dir: Path):
         self.base_dir = base_dir
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = base_dir / "outputs" / f"hour5_fixed_{self.timestamp}"
+        self.output_dir = base_dir / "outputs" / f"rlaif_{self.timestamp}"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
         print(f"🚀 Fixed Hour 5 Training Pipeline Initialized")
@@ -60,7 +60,7 @@ class FixedHour5TrainingPipeline:
         pairs_output = self.output_dir / "dpo_pairs.jsonl"
         
         cmd = [
-            "python", "src/training/make_pref_pairs_fixed.py",
+            "python", "src/training/make_pref_pairs.py",
             "--chunks", str(chunks_file),
             "--output", str(pairs_output),
             "--size", str(size),
@@ -109,7 +109,7 @@ class FixedHour5TrainingPipeline:
             print("   Will use full eval set instead of fixed subset")
         
         cmd = [
-            "python", "src/training/train_dpo_fixed.py",
+            "python", "src/training/train_dpo.py",
             "--train-data", str(train_data),
             "--eval-data", str(eval_data),
             "--output-dir", str(dpo_output),
@@ -147,7 +147,7 @@ class FixedHour5TrainingPipeline:
         ppo_output = self.output_dir / "lora_ppo"
         
         cmd = [
-            "python", "src/training/tiny_ppo_loop_fixed.py",
+            "python", "src/training/tiny_ppo_loop.py",
             "--dpo-model", str(dpo_model),
             "--output", str(ppo_output),
             "--use-real-ppo",
@@ -244,7 +244,7 @@ class FixedHour5TrainingPipeline:
         print(f"\n📋 Step 5: Generating final Hour 5 fixed report...")
         
         report = {
-            "hour5_fixed_training_summary": {
+            "rlaif_training_summary": {
                 "timestamp": datetime.now().isoformat(),
                 "output_directory": str(self.output_dir),
                 "pipeline_version": "fixed_canonical",
@@ -367,15 +367,15 @@ class FixedHour5TrainingPipeline:
         report["recommendations"] = recommendations
         
         # Save final report
-        report_file = self.output_dir / "hour5_fixed_final_report.json"
+        report_file = self.output_dir / "rlaif_final_report.json"
         with open(report_file, 'w') as f:
             json.dump(report, f, indent=2)
         
         # Generate markdown report
-        self._generate_markdown_report(report, self.output_dir / "hour5_fixed_final_report.md")
+        self._generate_markdown_report(report, self.output_dir / "rlaif_final_report.md")
         
         print(f"✅ Fixed final report generated: {report_file}")
-        print(f"📋 Markdown report: {self.output_dir / 'hour5_fixed_final_report.md'}")
+        print(f"📋 Markdown report: {self.output_dir / 'rlaif_final_report.md'}")
         
         return report
     
@@ -384,8 +384,8 @@ class FixedHour5TrainingPipeline:
         
         markdown = f"""# Fixed Hour 5 — RLAIF (DPO) + Tiny PPO Training Report
 
-**Generated:** {report['hour5_fixed_training_summary']['timestamp']}  
-**Output Directory:** `{report['hour5_fixed_training_summary']['output_directory']}`  
+**Generated:** {report['rlaif_training_summary']['timestamp']}  
+**Output Directory:** `{report['rlaif_training_summary']['output_directory']}`  
 **Pipeline Version:** Fixed with Canonical Patterns
 
 ## 🔧 Critical Fixes Applied
@@ -470,7 +470,7 @@ Completed fixed Hour 5 training pipeline:
             
             print(f"\n🎉 Fixed Hour 5 Training Pipeline Completed Successfully!")
             print(f"📁 All outputs saved to: {self.output_dir}")
-            print(f"📋 Final report: {self.output_dir / 'hour5_fixed_final_report.md'}")
+            print(f"📋 Final report: {self.output_dir / 'rlaif_final_report.md'}")
             
             # Print key metrics
             print(f"\n📊 Key Results (Fixed):")
@@ -523,7 +523,7 @@ def main():
     
     # Initialize and run fixed pipeline
     base_dir = Path.cwd()
-    pipeline = FixedHour5TrainingPipeline(base_dir)
+    pipeline = RLAIFTrainingPipeline(base_dir)
     
     final_report = pipeline.run_complete_pipeline(
         chunks_file=chunks_file,
