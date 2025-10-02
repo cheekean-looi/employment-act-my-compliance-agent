@@ -18,6 +18,16 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.retriever.hybrid_retriever import HybridRetriever
 
+# Environment-driven defaults for paths
+def _default_eval_dir() -> Path:
+    return Path(os.environ.get("EVAL_DATA_PATH", "data/eval"))
+
+def _default_retrieval_gold() -> Path:
+    env_path = os.environ.get("RETRIEVAL_GOLD_PATH")
+    if env_path:
+        return Path(env_path)
+    return _default_eval_dir() / "retrieval_gold.jsonl"
+
 
 class RetrievalEvaluator:
     """Evaluates retrieval performance using standard IR metrics."""
@@ -338,9 +348,17 @@ class RetrievalEvaluator:
 def main():
     """Main evaluation script."""
     parser = argparse.ArgumentParser(description="Evaluate retrieval performance")
-    parser.add_argument('--gold', required=True, help='Path to gold standard JSONL file')
-    parser.add_argument('--faiss', required=True, help='Path to FAISS index')
-    parser.add_argument('--store', required=True, help='Path to store pickle file')
+    parser.add_argument(
+        '--gold',
+        type=Path,
+        default=_default_retrieval_gold(),
+        help=(
+            'Path to gold standard JSONL file. Defaults to RETRIEVAL_GOLD_PATH or '
+            'EVAL_DATA_PATH/retrieval_gold.jsonl if set; else data/eval/retrieval_gold.jsonl'
+        )
+    )
+    parser.add_argument('--faiss', type=Path, required=True, help='Path to FAISS index')
+    parser.add_argument('--store', type=Path, required=True, help='Path to store pickle file')
     parser.add_argument('--embedding-model', default="BAAI/bge-m3")
     parser.add_argument('--reranker-model', default="cross-encoder/ms-marco-MiniLM-L-2-v2")
     parser.add_argument('--top-k', type=int, default=20, help='Number of results to retrieve')
@@ -348,6 +366,22 @@ def main():
     
     args = parser.parse_args()
     
+    # Validate paths
+    if not gold_path.exists():
+        print(f"❌ Gold dataset not found: {gold_path}")
+        print(
+            "💡 Provide --gold explicitly or set RETRIEVAL_GOLD_PATH / EVAL_DATA_PATH. "
+            f"Current default resolves to: {(_default_retrieval_gold()).as_posix()}"
+        )
+        return 1
+
+    if not Path(args.faiss).exists():
+        print(f"❌ FAISS index not found: {args.faiss}")
+        return 1
+    if not Path(args.store).exists():
+        print(f"❌ Store file not found: {args.store}")
+        return 1
+
     # Initialize retriever
     print("Initializing retriever...")
     retriever = HybridRetriever(
@@ -361,7 +395,15 @@ def main():
     evaluator = RetrievalEvaluator(retriever)
     
     # Load gold dataset
-    gold_data = evaluator.load_gold_dataset(Path(args.gold))
+    gold_path = Path(args.gold)
+    if not gold_path.exists():
+        print(f"❌ Gold dataset not found: {gold_path}")
+        print(
+            "💡 Provide --gold explicitly or set RETRIEVAL_GOLD_PATH / EVAL_DATA_PATH. "
+            f"Current default resolves to: {(_default_retrieval_gold()).as_posix()}"
+        )
+        return
+    gold_data = evaluator.load_gold_dataset(gold_path)
     
     # Run evaluation
     results = evaluator.evaluate_dataset(gold_data, top_k=args.top_k)
@@ -374,7 +416,8 @@ def main():
         with open(args.output, 'w') as f:
             json.dump(results, f, indent=2)
         print(f"\nDetailed results saved to: {args.output}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)

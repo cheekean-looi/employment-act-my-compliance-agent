@@ -18,6 +18,18 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from generation.guardrails import ProductionGuardrailsEngine, GuardrailsEngine
 
+# Environment-driven defaults
+def _default_eval_dir() -> Path:
+    # Prefer explicit EVAL_DATA_PATH; otherwise fall back to repo-default
+    return Path(os.environ.get("EVAL_DATA_PATH", "data/eval"))
+
+def _default_refusal_gold() -> Path:
+    # REFUSAL_GOLD_PATH overrides; otherwise EVAL_DATA_PATH/refusal_gold.jsonl
+    env_path = os.environ.get("REFUSAL_GOLD_PATH")
+    if env_path:
+        return Path(env_path)
+    return _default_eval_dir() / "refusal_gold.jsonl"
+
 @dataclass
 class RefusalMetrics:
     """Metrics for refusal evaluation."""
@@ -342,8 +354,15 @@ class RefusalEvaluator:
 def main():
     """Main entry point for refusal evaluation."""
     parser = argparse.ArgumentParser(description="Evaluate refusal decisions")
-    parser.add_argument("--gold", type=Path, default="data/eval/refusal_gold.jsonl",
-                       help="Path to refusal gold dataset")
+    parser.add_argument(
+        "--gold",
+        type=Path,
+        default=_default_refusal_gold(),
+        help=(
+            "Path to refusal gold dataset. Defaults to REFUSAL_GOLD_PATH or "
+            "EVAL_DATA_PATH/refusal_gold.jsonl if set; else data/eval/refusal_gold.jsonl"
+        ),
+    )
     parser.add_argument("--out", type=Path, default="outputs/refusal_eval.json",
                        help="Output path for results")
     parser.add_argument("--legacy", action="store_true",
@@ -362,7 +381,11 @@ def main():
         dataset = evaluator.load_refusal_gold_dataset(args.gold)
     except FileNotFoundError as e:
         print(f"❌ {e}")
-        print("💡 Provide a gold set at data/eval/refusal_gold.jsonl or pass --gold <path>. See tests/test_integration_guardrails_yaml.py for examples.")
+        hint_base = _default_eval_dir()
+        print(
+            "💡 Provide a gold set via --gold <path> or set REFUSAL_GOLD_PATH. "
+            f"Current default resolves to: {(_default_refusal_gold()).as_posix()}"
+        )
         return 1
     
     # Run evaluation
@@ -384,4 +407,4 @@ def main():
     return 0 if target_met else 1
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main() or 0)
