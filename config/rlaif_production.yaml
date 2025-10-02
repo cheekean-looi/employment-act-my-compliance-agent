@@ -1,0 +1,37 @@
+# Production RLAIF Training Configuration
+# Usage: python run_rlaif_training.py full --config config/rlaif_production.yaml
+
+# Required paths
+chunks_file: "data/processed/chunks.jsonl"
+sft_model: "outputs/lora_sft"
+output_dir: "outputs"
+
+# Model configuration  
+model_name: "meta-llama/Llama-3.1-8B-Instruct"
+
+# Preference pairs configuration
+pairs_size: 100  # More pairs for production
+pairs_seed: 42
+
+# DPO training configuration
+dpo_epochs: 2    # More epochs for production
+dpo_batch_size: 4
+dpo_learning_rate: 5e-5
+dpo_beta: 0.1
+
+# PPO training configuration
+ppo_prompts: 32  # More prompts for production
+ppo_model: "HuggingFaceTB/SmolLM-135M-Instruct"  # Memory-efficient
+ppo_batch_size: 32
+ppo_mini_batch_size: 4
+
+# Pipeline control
+skip_pairs: false
+skip_dpo: false
+skip_ppo: false
+
+# Advanced options
+dry_run: false
+verbose: true
+experiment_name: "production_v1"
+logging_backends: ["tensorboard", "wandb"]  # Multi-backend logging

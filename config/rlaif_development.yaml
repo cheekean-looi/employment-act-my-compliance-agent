@@ -1,0 +1,37 @@
+# Development RLAIF Training Configuration
+# Usage: python run_rlaif_training.py dev --config config/rlaif_development.yaml
+
+# Required paths
+chunks_file: "data/processed/chunks.jsonl"
+sft_model: "outputs/lora_sft"
+output_dir: "outputs/dev"
+
+# Model configuration (smaller for development)
+model_name: "meta-llama/Llama-3.1-8B-Instruct"
+
+# Preference pairs configuration (small for fast iteration)
+pairs_size: 20
+pairs_seed: 42
+
+# DPO training configuration (fast settings)
+dpo_epochs: 1
+dpo_batch_size: 2
+dpo_learning_rate: 1e-4  # Higher LR for faster convergence
+dpo_beta: 0.3           # Higher beta for more stable training
+
+# PPO training configuration (minimal for testing)
+ppo_prompts: 8
+ppo_model: "HuggingFaceTB/SmolLM-135M-Instruct"
+ppo_batch_size: 16      # Smaller batches
+ppo_mini_batch_size: 2
+
+# Pipeline control
+skip_pairs: false
+skip_dpo: false
+skip_ppo: false
+
+# Advanced options
+dry_run: false
+verbose: true
+experiment_name: "dev_test"
+logging_backends: ["tensorboard"]  # Local logging only

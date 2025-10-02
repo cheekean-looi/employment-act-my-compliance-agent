@@ -1,0 +1,51 @@
+# Development Complete Pipeline Configuration
+# Usage: python run_complete_pipeline.py dev --config config/development.yaml
+
+# Input configuration
+input_path: "data/raw_pdfs"
+output_dir: "outputs/dev"
+experiment_name: "dev_test"
+
+# Data pipeline configuration (small for fast iteration)
+data_config:
+  pdf_limit: 3           # Only process 3 PDFs
+  chunk_size: 800        # Smaller chunks
+  chunk_stride: 100
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  force_rebuild: false
+
+# SFT pipeline configuration (fast settings)
+sft_config:
+  dataset_size: 50       # Small dataset for quick testing
+  epochs: 1              # Single epoch for speed
+  learning_rate: 2e-4    # Higher LR for faster convergence
+  batch_size: 2          # Smaller batch for memory
+  model_name: "meta-llama/Llama-3.1-8B-Instruct"
+  use_sfttrainer: true   # TRL trainer for simplicity
+  bf16: true
+  use_4bit: true
+
+# RLAIF pipeline configuration (minimal for testing)
+rlaif_config:
+  pairs_size: 20         # Few pairs for quick testing
+  dpo_epochs: 1          # Single epoch
+  dpo_beta: 0.3          # Higher beta for stability
+  dpo_learning_rate: 1e-4
+  ppo_prompts: 8         # Minimal prompts
+  ppo_model: "HuggingFaceTB/SmolLM-135M-Instruct"
+
+# Pipeline control
+skip_data: false
+skip_sft: false
+skip_rlaif: false
+skip_evaluation: false
+
+# Resource management (memory conservative)
+max_memory_gb: 16
+gpu_memory_fraction: 0.7
+cleanup_intermediate: false  # Keep files for debugging
+
+# Advanced options
+dry_run: false
+verbose: true
+logging_backends: ["tensorboard"]  # Local logging only

@@ -54,14 +54,14 @@ class TestSFTDatasetGeneration:
     def test_dataset_generator_import(self):
         """Test that dataset generator can be imported."""
         try:
-            from src.training.make_sft_dataset_production import ProductionSFTGenerator
+            from src.training.make_sft_dataset import ProductionSFTGenerator
             assert ProductionSFTGenerator is not None
         except ImportError as e:
             pytest.skip(f"Cannot import dataset generator: {e}")
     
     def test_dataset_generator_initialization(self):
         """Test dataset generator initialization."""
-        from src.training.make_sft_dataset_production import ProductionSFTGenerator
+        from src.training.make_sft_dataset import ProductionSFTGenerator
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
             for chunk in SAMPLE_CHUNKS:
@@ -78,7 +78,7 @@ class TestSFTDatasetGeneration:
     
     def test_dataset_generation_small(self):
         """Test generating a small dataset."""
-        from src.training.make_sft_dataset_production import ProductionSFTGenerator
+        from src.training.make_sft_dataset import ProductionSFTGenerator
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
             for chunk in SAMPLE_CHUNKS:
@@ -100,7 +100,7 @@ class TestSFTDatasetGeneration:
     
     def test_citation_validation(self):
         """Test citation validation logic."""
-        from src.training.make_sft_dataset_production import ProductionSFTGenerator
+        from src.training.make_sft_dataset import ProductionSFTGenerator
         
         with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as f:
             for chunk in SAMPLE_CHUNKS:
@@ -181,7 +181,7 @@ class TestQLoRATraining:
     def test_trainer_import(self):
         """Test that trainer can be imported."""
         try:
-            from src.training.train_lora_production import ProductionQLoRATrainer, QLoRAConfig
+            from src.training.train_lora import ProductionQLoRATrainer, QLoRAConfig
             assert ProductionQLoRATrainer is not None
             assert QLoRAConfig is not None
         except ImportError as e:
@@ -190,7 +190,7 @@ class TestQLoRATraining:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
     def test_tiny_model_initialization(self):
         """Test initialization with a tiny model."""
-        from src.training.train_lora_production import ProductionQLoRATrainer, QLoRAConfig
+        from src.training.train_lora import ProductionQLoRATrainer, QLoRAConfig
         
         # Use a tiny model for testing
         config = QLoRAConfig(
@@ -222,14 +222,14 @@ class TestQLoRATraining:
     def test_citation_evaluator_import(self):
         """Test citation evaluator can be imported."""
         try:
-            from src.training.train_lora_production import CitationEvaluator
+            from src.training.train_lora import CitationEvaluator
             assert CitationEvaluator is not None
         except ImportError as e:
             pytest.skip(f"Cannot import citation evaluator: {e}")
     
     def test_citation_extraction(self):
         """Test citation extraction from text."""
-        from src.training.train_lora_production import CitationEvaluator
+        from src.training.train_lora import CitationEvaluator
         
         # Mock evaluator (without model loading)
         class MockEvaluator(CitationEvaluator):

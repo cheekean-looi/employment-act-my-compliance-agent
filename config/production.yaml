@@ -1,0 +1,50 @@
+# Production Complete Pipeline Configuration
+# Usage: python run_complete_pipeline.py prod --config config/production.yaml
+
+# Input configuration
+input_path: "data/raw_pdfs"
+output_dir: "outputs/production"
+experiment_name: "production_v1"
+
+# Data pipeline configuration
+data_config:
+  chunk_size: 1000
+  chunk_stride: 150
+  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  force_rebuild: false
+
+# SFT pipeline configuration  
+sft_config:
+  dataset_size: 500      # Large dataset for production
+  epochs: 3              # More epochs for better training
+  learning_rate: 1e-4
+  batch_size: 4
+  model_name: "meta-llama/Llama-3.1-8B-Instruct"
+  use_sfttrainer: false  # Use custom trainer for more control
+  bf16: true
+  use_4bit: true
+
+# RLAIF pipeline configuration
+rlaif_config:
+  pairs_size: 100        # More pairs for production
+  dpo_epochs: 2          # More DPO epochs
+  dpo_beta: 0.1
+  dpo_learning_rate: 5e-5
+  ppo_prompts: 32        # More PPO prompts
+  ppo_model: "HuggingFaceTB/SmolLM-135M-Instruct"  # Memory efficient
+
+# Pipeline control
+skip_data: false
+skip_sft: false
+skip_rlaif: false
+skip_evaluation: false
+
+# Resource management
+max_memory_gb: 32
+gpu_memory_fraction: 0.85
+cleanup_intermediate: true  # Save disk space
+
+# Advanced options
+dry_run: false
+verbose: true
+logging_backends: ["tensorboard", "wandb"]  # Full monitoring

@@ -1,148 +1,340 @@
 #!/usr/bin/env python3
 """
-Fixed Hour 5 — RLAIF (DPO) + Tiny PPO - Complete Training Pipeline
+RLAIF Training Pipeline - Modular DPO + PPO Training
 
-FIXES APPLIED:
-- Uses fixed components with canonical citation patterns
-- Passes explicit eval subset file to both DPO and PPO evaluators
-- Includes sanity eval after PPO with pre/post win-rate comparison
-- Enhanced error handling and validation
-- Memory optimization with smaller default models
-
-This script orchestrates the complete Hour 5 training pipeline:
+This script orchestrates the RLAIF (Reinforcement Learning from AI Feedback) training pipeline:
 1. Generate preference pairs with canonical patterns and SFT drafting
 2. Train DPO with fixed tokenizer padding and persistent eval subset
-3. Run tiny PPO with proper value-head initialization
-4. Generate evaluation reports with enhanced metrics and win-rate deltas
+3. Run PPO with proper value-head initialization and memory optimization
+4. Generate comprehensive evaluation reports
 
-Usage:
-    python run_rlaif_training.py --chunks data/processed/chunks.jsonl --sft-model outputs/lora_sft
+Key Features:
+- ✅ Subcommands for different pipeline modes (full/partial/resume/dev)
+- ✅ Configuration file support (YAML/JSON)
+- ✅ Robust error handling with checkpointing
+- ✅ Resource validation and monitoring
+- ✅ Dry-run mode for testing
+- ✅ Canonical citation patterns throughout
+- ✅ Memory optimization and progress tracking
 
-Features implemented:
-- ✅ Canonical citation patterns (EA-YYYY-NNN[L]*[(N)])
-- ✅ Enhanced chunk selection with section family mapping
-- ✅ Valid wrong-section negatives from ID universe
-- ✅ Labeling workflow with dry-run/strict modes in tools/
-- ✅ Fixed tokenizer padding (right for training, left for inference)
-- ✅ Persistent eval subset for consistent evaluation
-- ✅ Enhanced similarity with groundedness-aware scoring
-- ✅ Proper PPO value-head initialization with memory optimization
-- ✅ Comprehensive logging with reward history and plotting
+Usage Examples:
+    # Complete RLAIF pipeline
+    python run_rlaif_training.py full --chunks data/processed/chunks.jsonl --sft-model outputs/lora_sft
+
+    # Partial pipeline (skip PPO)  
+    python run_rlaif_training.py partial --chunks data/processed/chunks.jsonl --skip-ppo
+
+    # Resume from DPO checkpoint
+    python run_rlaif_training.py resume --from dpo --dpo-model outputs/lora_dpo
+
+    # Development mode (small datasets)
+    python run_rlaif_training.py dev --chunks data/processed/chunks.jsonl
 """
 
 import argparse
 import subprocess
 import json
+import yaml
+import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 import sys
 import os
+from dataclasses import dataclass, field, asdict
+from enum import Enum
+
+
+class PipelineStage(Enum):
+    """Pipeline stages for checkpointing and resume."""
+    PAIRS = "pairs"
+    DPO = "dpo" 
+    PPO = "ppo"
+    EVAL = "eval"
+
+
+@dataclass
+class RLAIFConfig:
+    """Configuration for RLAIF training pipeline."""
+    
+    # Required paths
+    chunks_file: Path
+    sft_model: Optional[Path] = None
+    output_dir: Path = field(default_factory=lambda: Path("outputs"))
+    
+    # Preference pairs config
+    pairs_size: int = 60
+    pairs_seed: int = 42
+    
+    # DPO config
+    dpo_epochs: int = 1
+    dpo_batch_size: int = 2
+    dpo_learning_rate: float = 5e-5
+    dpo_beta: float = 0.1
+    
+    # PPO config
+    ppo_prompts: int = 16
+    ppo_model: str = "HuggingFaceTB/SmolLM-135M-Instruct"
+    ppo_batch_size: int = 32
+    ppo_mini_batch_size: int = 4
+    
+    # Model config
+    model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
+    
+    # Pipeline control
+    skip_pairs: bool = False
+    skip_dpo: bool = False
+    skip_ppo: bool = False
+    resume_from: Optional[PipelineStage] = None
+    
+    # Advanced options
+    dry_run: bool = False
+    verbose: bool = False
+    experiment_name: Optional[str] = None
+    logging_backends: List[str] = field(default_factory=list)
+    
+    @classmethod
+    def from_file(cls, config_path: Path) -> 'RLAIFConfig':
+        """Load configuration from YAML or JSON file."""
+        with open(config_path, 'r') as f:
+            if config_path.suffix.lower() in ['.yaml', '.yml']:
+                data = yaml.safe_load(f)
+            else:
+                data = json.load(f)
+        
+        # Convert path strings to Path objects
+        if 'chunks_file' in data:
+            data['chunks_file'] = Path(data['chunks_file'])
+        if 'sft_model' in data and data['sft_model']:
+            data['sft_model'] = Path(data['sft_model'])
+        if 'output_dir' in data:
+            data['output_dir'] = Path(data['output_dir'])
+            
+        return cls(**data)
+
+
+@dataclass
+class PipelineState:
+    """Track pipeline progress for checkpointing."""
+    pairs_completed: bool = False
+    dpo_completed: bool = False  
+    ppo_completed: bool = False
+    eval_completed: bool = False
+    
+    pairs_output: Optional[Path] = None
+    dpo_output: Optional[Path] = None
+    ppo_output: Optional[Path] = None
+    
+    start_time: datetime = field(default_factory=datetime.now)
+    last_checkpoint: datetime = field(default_factory=datetime.now)
+
+
+class PipelineError(Exception):
+    """Custom exception for pipeline errors."""
+    pass
 
 
 class RLAIFTrainingPipeline:
-    def __init__(self, base_dir: Path):
-        self.base_dir = base_dir
-        self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = base_dir / "outputs" / f"rlaif_{self.timestamp}"
+    """RLAIF training pipeline with robust error handling and checkpointing."""
+    
+    def __init__(self, config: RLAIFConfig):
+        self.config = config
+        self.state = PipelineState()
+        self.setup_logging()
+        self.setup_output_dirs()
+        
+        # Create timestamped output directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        if config.experiment_name:
+            self.output_dir = config.output_dir / f"rlaif_{config.experiment_name}_{timestamp}"
+        else:
+            self.output_dir = config.output_dir / f"rlaif_{timestamp}"
+        
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        print(f"🚀 Fixed Hour 5 Training Pipeline Initialized")
-        print(f"📁 Output directory: {self.output_dir}")
-        print(f"🔧 Using fixed components with canonical patterns")
+        # Save config
+        with open(self.output_dir / "config.json", 'w') as f:
+            json.dump(asdict(config), f, indent=2, default=str)
     
-    def run_preference_pairs_generation(self, chunks_file: Path, sft_model: Path = None, 
-                                      size: int = 60, seed: int = 42) -> Path:
-        """Step 1: Generate preference pairs with fixed canonical patterns."""
+    def setup_logging(self):
+        """Setup comprehensive logging."""
+        log_level = logging.DEBUG if self.config.verbose else logging.INFO
         
-        print(f"\n📊 Step 1: Generating {size} preference pairs with canonical patterns...")
+        logging.basicConfig(
+            level=log_level,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(sys.stdout)
+            ]
+        )
+        
+        self.logger = logging.getLogger(__name__)
+        
+        if self.config.dry_run:
+            self.logger.info("🔍 DRY RUN MODE: Commands will be shown but not executed")
+    
+    def setup_output_dirs(self):
+        """Create necessary output directories."""
+        self.config.output_dir.mkdir(parents=True, exist_ok=True)
+    
+    def save_checkpoint(self):
+        """Save current pipeline state."""
+        self.state.last_checkpoint = datetime.now()
+        
+        checkpoint_file = self.output_dir / "checkpoint.json"
+        with open(checkpoint_file, 'w') as f:
+            json.dump(asdict(self.state), f, indent=2, default=str)
+        
+        self.logger.debug(f"💾 Checkpoint saved: {checkpoint_file}")
+    
+    def load_checkpoint(self) -> bool:
+        """Load pipeline state from checkpoint."""
+        checkpoint_file = self.output_dir / "checkpoint.json"
+        
+        if not checkpoint_file.exists():
+            return False
+        
+        try:
+            with open(checkpoint_file, 'r') as f:
+                data = json.load(f)
+            
+            # Reconstruct state object
+            self.state = PipelineState(**data)
+            self.logger.info(f"📂 Checkpoint loaded: {checkpoint_file}")
+            return True
+            
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to load checkpoint: {e}")
+            return False
+    
+    def validate_prerequisites(self):
+        """Validate all inputs and dependencies before starting."""
+        self.logger.info("🔍 Validating prerequisites...")
+        
+        # Check required files
+        if not self.config.chunks_file.exists():
+            raise PipelineError(f"Chunks file not found: {self.config.chunks_file}")
+        
+        # Check SFT model if provided
+        if self.config.sft_model and not self.config.sft_model.exists():
+            self.logger.warning(f"⚠️ SFT model not found: {self.config.sft_model}")
+            self.logger.info("📝 Will use heuristic preference pair generation")
+            self.config.sft_model = None
+        
+        # Memory warnings for large models
+        if "7B" in self.config.ppo_model or "8B" in self.config.ppo_model:
+            self.logger.warning(f"⚠️ Large PPO model ({self.config.ppo_model}) may cause OOM")
+            self.logger.info("💡 Consider using SmolLM-135M for memory efficiency")
+        
+        self.logger.info("✅ Prerequisites validated")
+    
+    def run_subprocess_with_monitoring(self, cmd: List[str], stage_name: str) -> int:
+        """Run subprocess with real-time monitoring and logging."""
+        cmd_str = ' '.join(str(c) for c in cmd)
+        self.logger.info(f"🚀 [{stage_name}] Running: {cmd_str}")
+        
+        if self.config.dry_run:
+            self.logger.info(f"🔍 DRY RUN: Would execute command above")
+            return 0
+        
+        # Run with real-time output
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True, cwd=Path.cwd()
+        )
+        
+        # Stream output in real-time
+        for line in process.stdout:
+            line = line.strip()
+            if line:
+                self.logger.info(f"[{stage_name}] {line}")
+        
+        process.wait()
+        
+        if process.returncode != 0:
+            raise PipelineError(f"{stage_name} failed with return code {process.returncode}")
+        
+        return process.returncode
+    
+    def run_preference_pairs_generation(self) -> Path:
+        """Generate preference pairs with canonical patterns."""
+        stage_name = "PAIRS"
+        self.logger.info(f"\n📊 Step 1: Generating {self.config.pairs_size} preference pairs...")
         
         pairs_output = self.output_dir / "dpo_pairs.jsonl"
         
         cmd = [
             "python", "src/training/make_pref_pairs.py",
-            "--chunks", str(chunks_file),
+            "--chunks", str(self.config.chunks_file),
             "--output", str(pairs_output),
-            "--size", str(size),
-            "--seed", str(seed)
+            "--size", str(self.config.pairs_size),
+            "--seed", str(self.config.pairs_seed)
         ]
         
-        if sft_model and sft_model.exists():
-            cmd.extend(["--sft-model", str(sft_model)])
-            print(f"🤖 Using SFT model for drafting: {sft_model}")
+        if self.config.sft_model:
+            cmd.extend(["--sft-model", str(self.config.sft_model)])
+            self.logger.info(f"🤖 Using SFT model for drafting: {self.config.sft_model}")
         
-        print(f"🔧 Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, cwd=self.base_dir, capture_output=True, text=True)
+        self.run_subprocess_with_monitoring(cmd, stage_name)
         
-        if result.returncode != 0:
-            print(f"❌ Preference pairs generation failed:")
-            print(result.stderr)
-            sys.exit(1)
+        if not self.config.dry_run:
+            # Validate output
+            if not pairs_output.exists():
+                raise PipelineError(f"Expected pairs output not found: {pairs_output}")
         
-        print(result.stdout)
-        print(f"✅ Fixed preference pairs generated: {pairs_output}")
+        self.state.pairs_completed = True
+        self.state.pairs_output = pairs_output
+        self.save_checkpoint()
         
+        self.logger.info(f"✅ Preference pairs generated: {pairs_output}")
         return pairs_output
     
-    def run_dpo_training(self, sft_model: Path = None, epochs: int = 1, 
-                        batch_size: int = 2, learning_rate: float = 5e-5, 
-                        beta: float = 0.1) -> Path:
-        """Step 2: Train DPO with fixed tokenizer and persistent eval subset."""
-        
-        print(f"\n🎯 Step 2: Training DPO with fixes for {epochs} epochs...")
+    def run_dpo_training(self) -> Path:
+        """Train DPO with fixed tokenizer and persistent eval subset."""
+        stage_name = "DPO"
+        self.logger.info(f"\n🎯 Step 2: Training DPO for {self.config.dpo_epochs} epochs...")
         
         dpo_output = self.output_dir / "lora_dpo"
         train_data = self.output_dir / "dpo_pairs_train.jsonl"
         eval_data = self.output_dir / "dpo_pairs_eval.jsonl"
-        
-        # Check if train/eval files exist
-        if not train_data.exists() or not eval_data.exists():
-            print(f"❌ Train/eval files not found. Expected:")
-            print(f"  {train_data}")
-            print(f"  {eval_data}")
-            sys.exit(1)
-        
-        # Validate split metadata exists for eval subset consistency
-        split_metadata = self.output_dir / "dpo_pairs_split_metadata.json"
-        if not split_metadata.exists():
-            print(f"⚠️ Split metadata not found: {split_metadata}")
-            print("   Will use full eval set instead of fixed subset")
         
         cmd = [
             "python", "src/training/train_dpo.py",
             "--train-data", str(train_data),
             "--eval-data", str(eval_data),
             "--output-dir", str(dpo_output),
-            "--epochs", str(epochs),
-            "--batch-size", str(batch_size),
-            "--learning-rate", str(learning_rate),
-            "--beta", str(beta)
+            "--model-name", self.config.model_name,
+            "--epochs", str(self.config.dpo_epochs),
+            "--batch-size", str(self.config.dpo_batch_size),
+            "--learning-rate", str(self.config.dpo_learning_rate),
+            "--beta", str(self.config.dpo_beta)
         ]
         
-        if sft_model and sft_model.exists():
-            cmd.extend(["--sft-model", str(sft_model)])
-            print(f"📚 Starting DPO from SFT checkpoint: {sft_model}")
+        if self.config.sft_model:
+            cmd.extend(["--sft-model", str(self.config.sft_model)])
         
-        print(f"🔧 Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, cwd=self.base_dir, capture_output=True, text=True)
+        # Add logging backends
+        for backend in self.config.logging_backends:
+            cmd.extend(["--report-to", backend])
         
-        if result.returncode != 0:
-            print(f"❌ DPO training failed:")
-            print(result.stderr)
-            sys.exit(1)
+        self.run_subprocess_with_monitoring(cmd, stage_name)
         
-        print(result.stdout)
-        print(f"✅ Fixed DPO training completed: {dpo_output}")
+        if not self.config.dry_run:
+            # Validate output
+            if not dpo_output.exists():
+                raise PipelineError(f"Expected DPO output not found: {dpo_output}")
         
+        self.state.dpo_completed = True
+        self.state.dpo_output = dpo_output
+        self.save_checkpoint()
+        
+        self.logger.info(f"✅ DPO training completed: {dpo_output}")
         return dpo_output
     
-    def run_tiny_ppo(self, dpo_model: Path, batch_size: int = 16, 
-                    mini_batch_size: int = 2, num_prompts: int = 16,
-                    base_model: str = "HuggingFaceTB/SmolLM-135M-Instruct") -> Path:
-        """Step 3: Run tiny PPO with fixed value-head initialization and memory optimization."""
-        
-        print(f"\n⚡ Step 3: Running Fixed Tiny PPO with {num_prompts} prompts...")
-        print(f"🤖 Using memory-optimized model: {base_model}")
+    def run_ppo_training(self, dpo_model: Path) -> Path:
+        """Run PPO with proper value-head initialization."""
+        stage_name = "PPO"
+        self.logger.info(f"\n⚡ Step 3: Running PPO with {self.config.ppo_prompts} prompts...")
         
         ppo_output = self.output_dir / "lora_ppo"
         
@@ -151,392 +343,252 @@ class RLAIFTrainingPipeline:
             "--dpo-model", str(dpo_model),
             "--output", str(ppo_output),
             "--use-real-ppo",
-            "--base-model", base_model,
-            "--batch-size", str(batch_size),
-            "--mini-batch-size", str(mini_batch_size),
-            "--num-prompts", str(num_prompts)
+            "--batch-size", str(self.config.ppo_batch_size),
+            "--mini-batch-size", str(self.config.ppo_mini_batch_size),
+            "--base-model", self.config.ppo_model,
+            "--num-prompts", str(self.config.ppo_prompts)
         ]
         
-        print(f"🔧 Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, cwd=self.base_dir, capture_output=True, text=True)
+        self.run_subprocess_with_monitoring(cmd, stage_name)
         
-        if result.returncode != 0:
-            print(f"❌ PPO training failed:")
-            print(result.stderr)
-            print("💡 Try reducing batch size or using smaller model")
-            sys.exit(1)
+        if not self.config.dry_run:
+            # Validate output
+            if not ppo_output.exists():
+                raise PipelineError(f"Expected PPO output not found: {ppo_output}")
         
-        print(result.stdout)
-        print(f"✅ Fixed PPO training completed: {ppo_output}")
+        self.state.ppo_completed = True
+        self.state.ppo_output = ppo_output
+        self.save_checkpoint()
         
+        self.logger.info(f"✅ PPO training completed: {ppo_output}")
         return ppo_output
     
-    def run_sanity_eval(self, dpo_output: Path, ppo_output: Path) -> Dict[str, Any]:
-        """Step 4: Run sanity evaluation with pre/post PPO win-rate comparison."""
-        
-        print(f"\n🔍 Step 4: Running sanity evaluation with win-rate deltas...")
-        
-        sanity_results = {
-            "pre_ppo_metrics": {},
-            "post_ppo_metrics": {},
-            "win_rate_delta": 0.0,
-            "evaluation_timestamp": datetime.now().isoformat()
-        }
-        
-        try:
-            # Load DPO evaluation results (pre-PPO)
-            dpo_eval_file = dpo_output / "dpo_eval_results.json"
-            if dpo_eval_file.exists():
-                with open(dpo_eval_file, 'r') as f:
-                    dpo_results = json.load(f)
-                sanity_results["pre_ppo_metrics"] = {
-                    "pairwise_win_rate": dpo_results.get("pairwise_win_rate", 0.0),
-                    "citation_exact_match": dpo_results.get("citation_exact_match", 0.0),
-                    "citation_iou": dpo_results.get("citation_iou", 0.0)
-                }
-                print(f"📊 Pre-PPO win-rate: {sanity_results['pre_ppo_metrics']['pairwise_win_rate']:.1%}")
-        except Exception as e:
-            print(f"⚠️ Could not load DPO results: {e}")
-        
-        try:
-            # Estimate post-PPO metrics from PPO results
-            ppo_summary_file = ppo_output / "ppo_summary.json"
-            if ppo_summary_file.exists():
-                with open(ppo_summary_file, 'r') as f:
-                    ppo_results = json.load(f)
-                
-                # Use PPO average reward as proxy for improvement
-                avg_reward = ppo_results.get("ppo_epoch_summary", {}).get("average_reward", 0.0)
-                high_quality_rate = ppo_results.get("ppo_epoch_summary", {}).get("high_quality_rate", 0.0)
-                
-                # Estimate post-PPO win-rate (simple heuristic)
-                pre_win_rate = sanity_results["pre_ppo_metrics"].get("pairwise_win_rate", 0.5)
-                estimated_improvement = min(0.1, max(-0.1, avg_reward * 0.05))  # Cap improvement
-                post_win_rate = max(0.0, min(1.0, pre_win_rate + estimated_improvement))
-                
-                sanity_results["post_ppo_metrics"] = {
-                    "estimated_pairwise_win_rate": post_win_rate,
-                    "ppo_average_reward": avg_reward,
-                    "ppo_high_quality_rate": high_quality_rate
-                }
-                
-                sanity_results["win_rate_delta"] = post_win_rate - pre_win_rate
-                
-                print(f"📊 Post-PPO estimated win-rate: {post_win_rate:.1%}")
-                print(f"📈 Win-rate delta: {sanity_results['win_rate_delta']:+.1%}")
-                
-        except Exception as e:
-            print(f"⚠️ Could not estimate post-PPO metrics: {e}")
-        
-        # Save sanity evaluation results
-        sanity_file = self.output_dir / "sanity_evaluation.json"
-        with open(sanity_file, 'w') as f:
-            json.dump(sanity_results, f, indent=2)
-        
-        print(f"✅ Sanity evaluation saved: {sanity_file}")
-        
-        return sanity_results
-    
-    def generate_final_report(self, dpo_output: Path, ppo_output: Path, 
-                            sanity_results: Dict[str, Any]):
-        """Step 5: Generate comprehensive final report with fixes summary."""
-        
-        print(f"\n📋 Step 5: Generating final Hour 5 fixed report...")
+    def generate_final_report(self) -> Dict[str, Any]:
+        """Generate comprehensive final report."""
+        self.logger.info(f"\n📋 Step 4: Generating final report...")
         
         report = {
-            "rlaif_training_summary": {
+            "pipeline_info": {
                 "timestamp": datetime.now().isoformat(),
-                "output_directory": str(self.output_dir),
-                "pipeline_version": "fixed_canonical",
+                "config": asdict(self.config),
+                "state": asdict(self.state),
+                "output_directory": str(self.output_dir)
             },
-            "fixes_applied": {
-                "canonical_citation_patterns": "EA-YYYY-NNN[L]*[(N)] everywhere",
-                "enhanced_chunk_selection": "Section family mapping with keyword matching",
-                "valid_wrong_sections": "Wrong sections from valid ID universe (not synthetic)",
-                "enhanced_labeling_cli": "Moved to tools/ with dry-run/strict modes",
-                "fixed_tokenizer_padding": "Right for training, left for inference",
-                "persistent_eval_subset": "Fixed eval pair IDs for consistent evaluation",
-                "enhanced_similarity_metric": "0.5×EM + 0.3×IoU + 0.2×F1 groundedness-aware",
-                "safety_vs_vagueness_separation": "Separate penalties for different violation types",
-                "proper_ppo_value_head": "Fixed initialization with PEFT adapter loading",
-                "memory_optimization": "Smaller default model (SmolLM-135M) and batch sizes"
-            },
-            "steps_completed": [],
-            "artifacts": {},
-            "metrics": {},
-            "sanity_evaluation": sanity_results
+            "artifacts": {
+                "pairs_file": str(self.state.pairs_output) if self.state.pairs_output else None,
+                "dpo_model": str(self.state.dpo_output) if self.state.dpo_output else None,
+                "ppo_model": str(self.state.ppo_output) if self.state.ppo_output else None,
+            }
         }
         
-        # Load DPO results
-        try:
-            dpo_eval_file = dpo_output / "dpo_eval_results.json"
-            if dpo_eval_file.exists():
-                with open(dpo_eval_file, 'r') as f:
-                    dpo_results = json.load(f)
-                report["metrics"]["dpo"] = dpo_results
-                report["steps_completed"].append("Fixed DPO training with canonical patterns and persistent eval")
-        except Exception as e:
-            print(f"⚠️ Could not load DPO results: {e}")
-        
-        # Load PPO results
-        try:
-            ppo_summary_file = ppo_output / "ppo_summary.json"
-            if ppo_summary_file.exists():
-                with open(ppo_summary_file, 'r') as f:
-                    ppo_results = json.load(f)
-                report["metrics"]["ppo"] = ppo_results
-                report["steps_completed"].append("Fixed PPO training with proper value-head initialization")
-        except Exception as e:
-            print(f"⚠️ Could not load PPO results: {e}")
-        
-        # List artifacts
-        report["artifacts"] = {
-            "preference_pairs": str(self.output_dir / "dpo_pairs.jsonl"),
-            "labeling_csv": str(self.output_dir / "tools" / "dpo_pairs_labeling.csv"),
-            "labeling_cli": str(self.output_dir / "tools" / "labeling_cli.py"),
-            "dpo_adapter": str(dpo_output),
-            "ppo_adapter": str(ppo_output),
-            "training_curves": str(dpo_output / "dpo_training_curves.png"),
-            "evaluation_report": str(dpo_output / "evaluation_report.md"),
-            "reward_history": str(ppo_output / "ppo_rewards_history.jsonl"),
-            "reward_curve": str(ppo_output / "ppo_reward_curve.png"),
-            "sanity_evaluation": str(self.output_dir / "sanity_evaluation.json")
-        }
-        
-        # Extract key metrics
-        dpo_metrics = report["metrics"].get("dpo", {})
-        ppo_metrics = report["metrics"].get("ppo", {}).get("ppo_epoch_summary", {})
-        
-        report["key_metrics"] = {
-            "dpo_pairwise_win_rate": dpo_metrics.get("pairwise_win_rate", 0.0),
-            "dpo_citation_em": dpo_metrics.get("citation_exact_match", 0.0),
-            "dpo_citation_iou": dpo_metrics.get("citation_iou", 0.0),
-            "dpo_safety_violations": dpo_metrics.get("safety_violations", 0.0),
-            "dpo_vagueness_violations": dpo_metrics.get("vagueness_violations", 0.0),
-            "ppo_average_reward": ppo_metrics.get("average_reward", 0.0),
-            "ppo_high_quality_rate": ppo_metrics.get("high_quality_rate", 0.0),
-            "win_rate_delta": sanity_results.get("win_rate_delta", 0.0)
-        }
-        
-        # Generate enhanced recommendations
-        recommendations = []
-        
-        win_rate = report["key_metrics"]["dpo_pairwise_win_rate"]
-        if win_rate >= 0.8:
-            recommendations.append("🏆 Excellent DPO performance with canonical patterns - strong preference alignment")
-        elif win_rate >= 0.6:
-            recommendations.append("✅ Good DPO performance - canonical pattern fixes working well")
-        else:
-            recommendations.append("⚠️ DPO performance needs improvement - check canonical pattern coverage in training data")
-        
-        citation_em = report["key_metrics"]["dpo_citation_em"]
-        if citation_em >= 0.8:
-            recommendations.append("📚 Excellent citation performance - canonical patterns enabling proper grounding")
-        elif citation_em >= 0.5:
-            recommendations.append("📖 Good citation performance - canonical validation working")
-        else:
-            recommendations.append("⚠️ Low citation accuracy - review canonical pattern matching in chunks")
-        
-        ppo_reward = report["key_metrics"]["ppo_average_reward"]
-        if ppo_reward > 1.0:
-            recommendations.append("⚡ PPO shows positive alignment with enhanced reward function")
-        elif ppo_reward > 0.0:
-            recommendations.append("🔄 PPO shows some improvement - enhanced reward components working")
-        else:
-            recommendations.append("⚠️ PPO needs attention - check value-head initialization and reward function")
-        
-        win_rate_delta = report["key_metrics"]["win_rate_delta"]
-        if win_rate_delta > 0.02:
-            recommendations.append("📈 Significant win-rate improvement from PPO - pipeline working well")
-        elif win_rate_delta > 0.0:
-            recommendations.append("📊 Slight win-rate improvement from PPO - consider longer training")
-        else:
-            recommendations.append("📉 No win-rate improvement from PPO - review PPO configuration")
-        
-        # Add fix-specific recommendations
-        safety_violations = report["key_metrics"]["dpo_safety_violations"]
-        vagueness_violations = report["key_metrics"]["dpo_vagueness_violations"]
-        
-        if safety_violations < 0.05 and vagueness_violations < 0.1:
-            recommendations.append("✅ Excellent safety/vagueness separation - refined judge working well")
-        elif safety_violations > 0.1:
-            recommendations.append("🚨 High safety violations - review safety patterns in judge")
-        elif vagueness_violations > 0.2:
-            recommendations.append("💭 High vagueness - add more specific training examples")
-        
-        report["recommendations"] = recommendations
-        
-        # Save final report
+        # Save report
         report_file = self.output_dir / "rlaif_final_report.json"
         with open(report_file, 'w') as f:
-            json.dump(report, f, indent=2)
+            json.dump(report, f, indent=2, default=str)
         
-        # Generate markdown report
-        self._generate_markdown_report(report, self.output_dir / "rlaif_final_report.md")
-        
-        print(f"✅ Fixed final report generated: {report_file}")
-        print(f"📋 Markdown report: {self.output_dir / 'rlaif_final_report.md'}")
-        
+        self.logger.info(f"📋 Final report saved: {report_file}")
         return report
     
-    def _generate_markdown_report(self, report: dict, output_file: Path):
-        """Generate human-readable markdown report."""
-        
-        markdown = f"""# Fixed Hour 5 — RLAIF (DPO) + Tiny PPO Training Report
-
-**Generated:** {report['rlaif_training_summary']['timestamp']}  
-**Output Directory:** `{report['rlaif_training_summary']['output_directory']}`  
-**Pipeline Version:** Fixed with Canonical Patterns
-
-## 🔧 Critical Fixes Applied
-
-"""
-        
-        for fix_name, fix_description in report["fixes_applied"].items():
-            markdown += f"- **{fix_name.replace('_', ' ').title()}**: {fix_description}\n"
-        
-        markdown += f"""
-
-## ✅ Pipeline Summary
-
-Completed fixed Hour 5 training pipeline:
-
-"""
-        
-        for step in report["steps_completed"]:
-            markdown += f"- ✅ {step}\n"
-        
-        markdown += f"""
-
-## 📊 Key Metrics
-
-| Metric | Value | Status |
-|--------|-------|--------|
-| DPO Enhanced Win-Rate | {report['key_metrics']['dpo_pairwise_win_rate']:.1%} | {'🏆' if report['key_metrics']['dpo_pairwise_win_rate'] >= 0.8 else '✅' if report['key_metrics']['dpo_pairwise_win_rate'] >= 0.6 else '⚠️'} |
-| DPO Citation EM (Canonical) | {report['key_metrics']['dpo_citation_em']:.3f} | {'📚' if report['key_metrics']['dpo_citation_em'] >= 0.8 else '📖' if report['key_metrics']['dpo_citation_em'] >= 0.5 else '⚠️'} |
-
-## 💡 Recommendations
-
-"""
-        
-        for rec in report["recommendations"]:
-            markdown += f"- {rec}\n"
-        
-        markdown += """
-
-*Generated by Fixed Hour 5 Training Pipeline with Canonical Patterns*
-"""
-        
-        with open(output_file, 'w') as f:
-            f.write(markdown)
-    
-    def run_complete_pipeline(self, chunks_file: Path, sft_model: Path = None,
-                            pairs_size: int = 60, dpo_epochs: int = 1,
-                            ppo_prompts: int = 16, ppo_model: str = "HuggingFaceTB/SmolLM-135M-Instruct",
-                            seed: int = 42):
-        """Run the complete fixed Hour 5 training pipeline."""
-        
-        print(f"🎯 Starting Complete Fixed Hour 5 Training Pipeline")
-        print(f"📚 Chunks file: {chunks_file}")
-        print(f"🤖 SFT model: {sft_model if sft_model else 'None (heuristic generation)'}")
-        print(f"📊 Preference pairs: {pairs_size}")
-        print(f"🎯 DPO epochs: {dpo_epochs}")
-        print(f"⚡ PPO prompts: {ppo_prompts}")
-        print(f"🧠 PPO model: {ppo_model}")
-        print(f"🎲 Seed: {seed}")
-        print(f"🔧 Pipeline: Fixed with canonical patterns")
-        
+    def run(self):
+        """Main pipeline runner with comprehensive error handling."""
         try:
-            # Step 1: Generate preference pairs with canonical patterns
-            pairs_output = self.run_preference_pairs_generation(
-                chunks_file, sft_model, pairs_size, seed
-            )
+            self.logger.info("🚀 Starting RLAIF Training Pipeline")
+            self.logger.info(f"📁 Output directory: {self.output_dir}")
             
-            # Step 2: Train DPO with fixes
-            dpo_output = self.run_dpo_training(
-                sft_model, dpo_epochs
-            )
+            # Validate prerequisites
+            self.validate_prerequisites()
             
-            # Step 3: Run Tiny PPO with fixes
-            ppo_output = self.run_tiny_ppo(
-                dpo_output, num_prompts=ppo_prompts, base_model=ppo_model
-            )
+            # Load checkpoint if exists
+            self.load_checkpoint()
             
-            # Step 4: Run sanity evaluation
-            sanity_results = self.run_sanity_eval(dpo_output, ppo_output)
+            # Run pipeline stages
+            if not self.config.skip_pairs and not self.state.pairs_completed:
+                self.run_preference_pairs_generation()
             
-            # Step 5: Generate final report
-            final_report = self.generate_final_report(dpo_output, ppo_output, sanity_results)
+            if not self.config.skip_dpo and not self.state.dpo_completed:
+                self.run_dpo_training()
             
-            print(f"\n🎉 Fixed Hour 5 Training Pipeline Completed Successfully!")
-            print(f"📁 All outputs saved to: {self.output_dir}")
-            print(f"📋 Final report: {self.output_dir / 'rlaif_final_report.md'}")
+            if not self.config.skip_ppo and not self.state.ppo_completed:
+                dpo_model = self.state.dpo_output or self.output_dir / "lora_dpo"
+                self.run_ppo_training(dpo_model)
             
-            # Print key metrics
-            print(f"\n📊 Key Results (Fixed):")
-            print(f"🏆 DPO Enhanced Win-Rate: {final_report['key_metrics']['dpo_pairwise_win_rate']:.1%}")
-            print(f"📚 Citation EM (Canonical): {final_report['key_metrics']['dpo_citation_em']:.3f}")
-            print(f"⚡ PPO Enhanced Reward: {final_report['key_metrics']['ppo_average_reward']:+.3f}")
-            print(f"📈 Win-Rate Delta: {final_report['key_metrics']['win_rate_delta']:+.1%}")
-            print(f"🔧 All critical fixes applied successfully")
+            # Generate final report
+            final_report = self.generate_final_report()
+            
+            # Success message
+            duration = datetime.now() - self.state.start_time
+            self.logger.info(f"\n🎉 RLAIF Pipeline Completed Successfully!")
+            self.logger.info(f"⏱️ Total duration: {duration}")
+            self.logger.info(f"📁 All outputs saved to: {self.output_dir}")
             
             return final_report
             
+        except PipelineError as e:
+            self.logger.error(f"❌ Pipeline error: {e}")
+            sys.exit(1)
+        except KeyboardInterrupt:
+            self.logger.warning(f"⚠️ Pipeline interrupted by user")
+            self.save_checkpoint()
+            self.logger.info(f"💾 Progress saved. Resume with: --resume-from {self.get_last_completed_stage()}")
+            sys.exit(1)
         except Exception as e:
-            print(f"❌ Fixed pipeline failed: {e}")
+            self.logger.error(f"💥 Unexpected error: {e}")
+            self.save_checkpoint()
             raise e
+    
+    def get_last_completed_stage(self) -> str:
+        """Get the last completed stage for resume."""
+        if self.state.ppo_completed:
+            return "eval"
+        elif self.state.dpo_completed:
+            return "ppo"
+        elif self.state.pairs_completed:
+            return "dpo"
+        else:
+            return "pairs"
+
+
+def create_parser():
+    """Create enhanced argument parser with subcommands."""
+    parser = argparse.ArgumentParser(
+        description="RLAIF Training Pipeline - DPO + PPO",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Complete RLAIF pipeline
+  %(prog)s full --chunks data/processed/chunks.jsonl --sft-model outputs/lora_sft
+
+  # Partial pipeline (skip PPO)
+  %(prog)s partial --chunks data/processed/chunks.jsonl --skip-ppo
+
+  # Resume from checkpoint
+  %(prog)s resume --from dpo --dpo-model outputs/lora_dpo
+
+  # Development mode (small datasets)
+  %(prog)s dev --chunks data/processed/chunks.jsonl
+
+  # With configuration file
+  %(prog)s full --config config/rlaif_production.yaml
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest='command', help='Pipeline commands')
+    
+    # Full pipeline
+    full_parser = subparsers.add_parser('full', help='Run complete RLAIF pipeline')
+    add_common_args(full_parser)
+    
+    # Partial pipeline
+    partial_parser = subparsers.add_parser('partial', help='Run partial pipeline')
+    add_common_args(partial_parser)
+    partial_parser.add_argument('--skip-pairs', action='store_true', help='Skip preference pairs generation')
+    partial_parser.add_argument('--skip-dpo', action='store_true', help='Skip DPO training')
+    partial_parser.add_argument('--skip-ppo', action='store_true', help='Skip PPO training')
+    
+    # Resume pipeline
+    resume_parser = subparsers.add_parser('resume', help='Resume from checkpoint')
+    resume_parser.add_argument('--from', dest='resume_from', choices=['pairs', 'dpo', 'ppo'], 
+                              required=True, help='Resume from this stage')
+    resume_parser.add_argument('--output-dir', required=True, help='Previous output directory to resume from')
+    add_common_args(resume_parser, include_chunks=False)
+    
+    # Development mode
+    dev_parser = subparsers.add_parser('dev', help='Development mode (small datasets)')
+    add_common_args(dev_parser)
+    dev_parser.set_defaults(pairs_size=20, ppo_prompts=8, dpo_epochs=1)
+    
+    return parser
+
+
+def add_common_args(parser, include_chunks=True):
+    """Add common arguments to parser."""
+    
+    # Configuration
+    parser.add_argument('--config', help='Path to configuration YAML/JSON file')
+    
+    # Required paths
+    if include_chunks:
+        parser.add_argument('--chunks', required=True, help='Path to chunks.jsonl file')
+    parser.add_argument('--sft-model', help='Path to SFT model directory')
+    
+    # Training parameters
+    parser.add_argument('--pairs-size', type=int, default=60, help='Number of preference pairs')
+    parser.add_argument('--dpo-epochs', type=int, default=1, help='DPO training epochs')
+    parser.add_argument('--dpo-beta', type=float, default=0.1, help='DPO beta parameter')
+    parser.add_argument('--ppo-prompts', type=int, default=16, help='PPO prompts count')
+    parser.add_argument('--ppo-model', default="HuggingFaceTB/SmolLM-135M-Instruct", 
+                       help='PPO base model')
+    
+    # Model configuration
+    parser.add_argument('--model-name', default="meta-llama/Llama-3.1-8B-Instruct",
+                       help='Base model name')
+    
+    # Output configuration
+    parser.add_argument('--output-dir', default="outputs", help='Output directory')
+    parser.add_argument('--experiment-name', help='Experiment name for organization')
+    
+    # Logging
+    parser.add_argument('--report-to', action='append', choices=['tensorboard', 'wandb'],
+                       default=[], help='Logging backends (can specify multiple)')
+    
+    # Advanced options
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
+    parser.add_argument('--dry-run', action='store_true', help='Show commands without executing')
+    parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fixed Hour 5 — RLAIF (DPO) + Tiny PPO Training Pipeline")
-    parser.add_argument('--chunks', required=True, help='Path to chunks.jsonl file')
-    parser.add_argument('--sft-model', help='Path to SFT model for drafting (recommended)')
-    parser.add_argument('--pairs-size', type=int, default=60, help='Number of preference pairs to generate')
-    parser.add_argument('--dpo-epochs', type=int, default=1, help='Number of DPO training epochs')
-    parser.add_argument('--ppo-prompts', type=int, default=16, help='Number of prompts for PPO (memory optimized)')
-    parser.add_argument('--ppo-model', default="HuggingFaceTB/SmolLM-135M-Instruct", 
-                       help='PPO base model (default: memory-efficient SmolLM)')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
-    
+    """Main entry point."""
+    parser = create_parser()
     args = parser.parse_args()
     
-    # Validate inputs
-    chunks_file = Path(args.chunks)
-    if not chunks_file.exists():
-        print(f"❌ Chunks file not found: {chunks_file}")
+    if not args.command:
+        parser.print_help()
         sys.exit(1)
     
-    sft_model = Path(args.sft_model) if args.sft_model else None
-    if sft_model and not sft_model.exists():
-        print(f"⚠️ SFT model not found: {sft_model}")
-        print(f"📝 Continuing with heuristic preference pair generation")
-        sft_model = None
-    
-    # Memory warning for large PPO models
-    if "7B" in args.ppo_model or "8B" in args.ppo_model:
-        print(f"⚠️ WARNING: Large PPO model ({args.ppo_model}) may cause OOM")
-        print(f"💡 Consider using default SmolLM-135M for memory efficiency")
-        response = input("Continue with large model? (y/N): ")
-        if response.lower() != 'y':
-            args.ppo_model = "HuggingFaceTB/SmolLM-135M-Instruct"
-            print(f"🔄 Switched to memory-efficient model: {args.ppo_model}")
-    
-    # Initialize and run fixed pipeline
-    base_dir = Path.cwd()
-    pipeline = RLAIFTrainingPipeline(base_dir)
-    
-    final_report = pipeline.run_complete_pipeline(
-        chunks_file=chunks_file,
-        sft_model=sft_model,
-        pairs_size=args.pairs_size,
-        dpo_epochs=args.dpo_epochs,
-        ppo_prompts=args.ppo_prompts,
-        ppo_model=args.ppo_model,
-        seed=args.seed
-    )
-    
-    print(f"\n✨ Fixed Hour 5 Training Complete! All critical fixes applied.")
-    print(f"📋 Check the comprehensive fixed report for detailed analysis.")
+    try:
+        # Load configuration
+        if hasattr(args, 'config') and args.config:
+            config = RLAIFConfig.from_file(Path(args.config))
+            # Override with command line arguments
+            for key, value in vars(args).items():
+                if value is not None and key != 'config':
+                    setattr(config, key, value)
+        else:
+            # Create config from command line args
+            config_dict = {k: v for k, v in vars(args).items() 
+                          if k in RLAIFConfig.__dataclass_fields__ and v is not None}
+            
+            # Convert string paths to Path objects
+            if 'chunks' in config_dict:
+                config_dict['chunks_file'] = Path(config_dict.pop('chunks'))
+            if 'sft_model' in config_dict and config_dict['sft_model']:
+                config_dict['sft_model'] = Path(config_dict['sft_model'])
+            if 'output_dir' in config_dict:
+                config_dict['output_dir'] = Path(config_dict['output_dir'])
+            
+            # Handle subcommand-specific logic
+            if args.command == 'partial':
+                config_dict.update({
+                    'skip_pairs': getattr(args, 'skip_pairs', False),
+                    'skip_dpo': getattr(args, 'skip_dpo', False),
+                    'skip_ppo': getattr(args, 'skip_ppo', False)
+                })
+            elif args.command == 'resume':
+                config_dict['resume_from'] = getattr(args, 'resume_from', None)
+            
+            config = RLAIFConfig(**config_dict)
+        
+        # Initialize and run pipeline
+        pipeline = RLAIFTrainingPipeline(config)
+        final_report = pipeline.run()
+        
+        print(f"\n✨ RLAIF Training Complete!")
+        print(f"📁 Check outputs in: {pipeline.output_dir}")
+        
+    except Exception as e:
+        print(f"❌ Pipeline failed: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
