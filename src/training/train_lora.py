@@ -687,7 +687,7 @@ class ProductionQLoRATrainer:
                 full_text,
                 truncation=True,
                 max_length=self.config.max_length,
-                padding=False
+                padding="max_length"
             )
             
             # Create labels with masking (only train on assistant response)
