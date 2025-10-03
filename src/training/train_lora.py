@@ -575,7 +575,6 @@ class ProductionQLoRATrainer:
                 # Transformers will fall back internally if FA2 truly unavailable, but
                 # T4 (sm_75) lacks support — prefer SDPA in that case.
                 try:
-                    import torch.cuda
                     cc = torch.cuda.get_device_capability(0)[0]
                     attn_impl = "flash_attention_2" if cc >= 8 else "sdpa"
                 except Exception:
@@ -591,6 +590,7 @@ class ProductionQLoRATrainer:
             torch_dtype=preferred_dtype,
             attn_implementation=attn_impl
         )
+
         # Move to MPS explicitly if available and not using CUDA
         if not torch.cuda.is_available() and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
             try:
