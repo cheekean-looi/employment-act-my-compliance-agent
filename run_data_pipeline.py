@@ -133,15 +133,23 @@ class DataPipeline:
         self.config = config
         self.state = DataState()
         self.setup_logging()
-        self.setup_output_dirs()
-        
-        # Define key output paths
+
+        # Normalize path types defensively (config may be overridden by argparse)
+        if not isinstance(self.config.input_path, Path):
+            self.config.input_path = Path(self.config.input_path)
+        if not isinstance(self.config.output_dir, Path):
+            self.config.output_dir = Path(self.config.output_dir)
+
+        # Define key output paths before creating directories
         self.text_file = self.config.output_dir / "text.jsonl"
         self.chunks_file = self.config.output_dir / "chunks.jsonl"
         self.indices_dir = self.config.output_dir / "indices"
         self.faiss_index = self.indices_dir / "faiss.index"
         self.store_file = self.indices_dir / "store.pkl"
-        
+
+        # Create directories now that paths are established
+        self.setup_output_dirs()
+
         # Save config
         config_file = self.config.output_dir / "data_config.json"
         with open(config_file, 'w') as f:
@@ -166,7 +174,11 @@ class DataPipeline:
     
     def setup_output_dirs(self):
         """Create necessary output directories."""
+        # Ensure normalized Paths
+        if not isinstance(self.config.output_dir, Path):
+            self.config.output_dir = Path(self.config.output_dir)
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        # self.indices_dir is set in __init__ prior to this call
         self.indices_dir.mkdir(parents=True, exist_ok=True)
     
     def save_checkpoint(self):
@@ -320,7 +332,16 @@ class DataPipeline:
         
         # Add embedding model if specified
         if self.config.embedding_model:
-            cmd.extend(["--embedding-model", self.config.embedding_model])
+            # build_index.py expects --model, not --embedding-model
+            cmd.extend(["--model", self.config.embedding_model])
+
+        # Auto-enable FAISS GPU when CUDA is available
+        try:
+            import torch
+            if torch.cuda.is_available():
+                cmd.append("--gpu")
+        except Exception:
+            pass
         
         self.run_subprocess_with_monitoring(cmd, stage_name)
         
@@ -499,15 +520,15 @@ Examples:
 def add_common_args(parser):
     """Add common arguments."""
     parser.add_argument('--config', help='Path to configuration YAML/JSON file')
-    parser.add_argument('--input', dest='input_path', required=True, help='Input path (PDFs directory)')
-    parser.add_argument('--output', dest='output_dir', default="data/processed", help='Output directory')
+    parser.add_argument('--input', dest='input_path', type=Path, required=True, help='Input path (PDFs directory)')
+    parser.add_argument('--output', dest='output_dir', type=Path, default=Path("data/processed"), help='Output directory')
     
     # Chunking config
     parser.add_argument('--chunk-size', type=int, default=1000, help='Chunk size in characters')
     parser.add_argument('--chunk-stride', type=int, default=150, help='Chunk overlap in characters')
     
     # Index config
-    parser.add_argument('--embedding-model', default="sentence-transformers/all-MiniLM-L6-v2",
+    parser.add_argument('--embedding-model', '--model', dest='embedding_model', default="sentence-transformers/all-MiniLM-L6-v2",
                        help='Embedding model for FAISS index')
     
     # Control flags
@@ -519,8 +540,8 @@ def add_common_args(parser):
 def add_pdf_args(parser):
     """Add PDF-specific arguments."""
     parser.add_argument('--config', help='Path to configuration file')
-    parser.add_argument('--input', dest='input_path', required=True, help='PDF directory')
-    parser.add_argument('--output', dest='output_dir', default="data/processed", help='Output directory')
+    parser.add_argument('--input', dest='input_path', type=Path, required=True, help='PDF directory')
+    parser.add_argument('--output', dest='output_dir', type=Path, default=Path("data/processed"), help='Output directory')
     parser.add_argument('--limit', dest='pdf_limit', type=int, help='Limit number of PDFs')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
@@ -529,8 +550,8 @@ def add_pdf_args(parser):
 def add_chunk_args(parser):
     """Add chunking-specific arguments."""
     parser.add_argument('--config', help='Path to configuration file')
-    parser.add_argument('--input', dest='input_path', required=True, help='Text JSONL file')
-    parser.add_argument('--output', dest='output_dir', default="data/processed", help='Output directory')
+    parser.add_argument('--input', dest='input_path', type=Path, required=True, help='Text JSONL file')
+    parser.add_argument('--output', dest='output_dir', type=Path, default=Path("data/processed"), help='Output directory')
     parser.add_argument('--chunk-size', type=int, default=1000, help='Chunk size')
     parser.add_argument('--chunk-stride', type=int, default=150, help='Chunk stride')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
@@ -540,9 +561,9 @@ def add_chunk_args(parser):
 def add_index_args(parser):
     """Add indexing-specific arguments."""
     parser.add_argument('--config', help='Path to configuration file')
-    parser.add_argument('--input', dest='input_path', required=True, help='Chunks JSONL file')
-    parser.add_argument('--output', dest='output_dir', default="data/processed", help='Output directory')
-    parser.add_argument('--embedding-model', default="sentence-transformers/all-MiniLM-L6-v2",
+    parser.add_argument('--input', dest='input_path', type=Path, required=True, help='Chunks JSONL file')
+    parser.add_argument('--output', dest='output_dir', type=Path, default=Path("data/processed"), help='Output directory')
+    parser.add_argument('--embedding-model', '--model', dest='embedding_model', default="sentence-transformers/all-MiniLM-L6-v2",
                        help='Embedding model')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
@@ -564,7 +585,10 @@ def main():
             # Override with command line arguments
             for key, value in vars(args).items():
                 if value is not None and key != 'config' and key in DataConfig.__dataclass_fields__:
-                    setattr(config, key, value)
+                    if key in {"input_path", "output_dir"}:
+                        setattr(config, key, Path(value))
+                    else:
+                        setattr(config, key, value)
         else:
             # Create config from command line args
             config_dict = {}

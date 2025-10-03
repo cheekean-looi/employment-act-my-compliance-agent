@@ -168,6 +168,27 @@ class SFTPipeline:
         # Save config
         with open(self.output_dir / "config.json", 'w') as f:
             json.dump(asdict(config), f, indent=2, default=str)
+
+        # Detect accelerator and apply conservative overrides for MPS/CPU
+        try:
+            from src.utils.accelerator import get_accelerator
+            accel = get_accelerator()
+            self.accelerator = accel
+            if accel.backend == 'mps':
+                # Disable bf16; prefer small batch to reduce memory pressure
+                if self.config.bf16:
+                    self.logger.info("🍏 MPS detected: disabling bf16 for compatibility")
+                    self.config.bf16 = False
+                if self.config.batch_size > 2:
+                    self.logger.info("🍏 MPS detected: reducing batch size to 2 for stability")
+                    self.config.batch_size = 2
+            elif accel.backend == 'cpu':
+                # Warn on large models
+                if '8B' in self.config.model_name or '7B' in self.config.model_name:
+                    self.logger.warning("⚠️ Large base model on CPU may be extremely slow. Consider a smaller model (e.g., SmolLM-135M).")
+        except Exception:
+            # Best-effort only; continue on failure
+            self.accelerator = None
     
     def setup_logging(self):
         """Setup comprehensive logging."""
@@ -373,6 +394,19 @@ class SFTPipeline:
                 "adapter_weights": str(self.model_dir / "adapter_model.safetensors") if self.state.training_completed else None,
             }
         }
+
+        # Attach accelerator info if available
+        try:
+            if getattr(self, 'accelerator', None) is not None:
+                report["pipeline_info"]["accelerator"] = {
+                    "backend": self.accelerator.backend,
+                    "device": self.accelerator.device_str,
+                    "can_use_4bit": self.accelerator.can_use_4bit,
+                    "recommended_dtype": self.accelerator.recommended_dtype,
+                    "details": self.accelerator.details,
+                }
+        except Exception:
+            pass
         
         # Save report
         report_file = self.output_dir / "sft_final_report.json"
@@ -533,6 +567,8 @@ def main():
     """Main entry point."""
     parser = create_parser()
     args = parser.parse_args()
+    # Capture parser defaults to prevent overriding config with defaults
+    parser_defaults = {a.dest: a.default for a in parser._actions if getattr(a, 'dest', None)}
     
     if not args.command:
         parser.print_help()
@@ -542,10 +578,16 @@ def main():
         # Load configuration
         if hasattr(args, 'config') and args.config:
             config = SFTConfig.from_file(Path(args.config))
-            # Override with command line arguments
+            # Override only when CLI values differ from parser defaults
             for key, value in vars(args).items():
-                if value is not None and key != 'config' and key in SFTConfig.__dataclass_fields__:
-                    setattr(config, key, value)
+                if key == 'config' or key not in SFTConfig.__dataclass_fields__:
+                    continue
+                default_val = parser_defaults.get(key, None)
+                if value is not None and value != default_val:
+                    if key in {"chunks_file", "output_dir"}:
+                        setattr(config, key, Path(value))
+                    else:
+                        setattr(config, key, value)
         else:
             # Create config from command line args
             config_dict = {}

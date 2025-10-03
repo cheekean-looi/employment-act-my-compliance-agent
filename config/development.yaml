@@ -16,14 +16,15 @@ data_config:
 
 # SFT pipeline configuration (fast settings)
 sft_config:
-  dataset_size: 50       # Small dataset for quick testing
-  epochs: 1              # Single epoch for speed
-  learning_rate: 2e-4    # Higher LR for faster convergence
-  batch_size: 2          # Smaller batch for memory
-  model_name: "meta-llama/Llama-3.1-8B-Instruct"
-  use_sfttrainer: true   # TRL trainer for simplicity
-  bf16: true
-  use_4bit: true
+  dataset_size: 50        # Small dataset for quick testing
+  epochs: 1               # Single epoch for speed
+  learning_rate: 2e-4     # Higher LR for faster convergence
+  batch_size: 2           # Smaller batch for memory
+  # Use a public, lightweight model for Mac/MPS development
+  model_name: "HuggingFaceTB/SmolLM-135M-Instruct"
+  use_sfttrainer: true    # TRL trainer for simplicity
+  bf16: false             # Disable bf16 on MPS/CPU
+  use_4bit: false         # Disable 4-bit quantization off CUDA
 
 # RLAIF pipeline configuration (minimal for testing)
 rlaif_config:

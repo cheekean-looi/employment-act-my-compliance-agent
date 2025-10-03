@@ -80,19 +80,23 @@ class CanonicalCitationValidator:
         """Normalize section ID to canonical format."""
         if not section_id:
             return None
-        
-        # Handle legacy format like "EA-60E" -> "EA-2022-60E"
-        legacy_pattern = re.match(r'EA-(\d+)([A-Z]*)', section_id, re.IGNORECASE)
-        if legacy_pattern:
-            number = legacy_pattern.group(1)
-            letter = legacy_pattern.group(2)
-            return f"EA-2022-{number}{letter}".upper()
-        
-        # Handle already canonical format
-        canonical_match = cls.CANONICAL_PATTERN.match(section_id.upper())
+
+        s = section_id.strip().upper()
+
+        # 1) If it's already canonical, return as-is
+        canonical_match = cls.CANONICAL_PATTERN.fullmatch(s) or cls.CANONICAL_PATTERN.match(s)
         if canonical_match:
             return canonical_match.group(1)
-        
+
+        # 2) Handle legacy forms like "EA-60E" or "EA-60E(1)" → "EA-2022-60E(1)"
+        legacy = re.match(r'^EA-(\d+)([A-Z]*)(?:\((\d+)\))?$', s, re.IGNORECASE)
+        if legacy:
+            number = legacy.group(1)
+            letter = legacy.group(2) or ''
+            paren = legacy.group(3)
+            base = f"EA-2022-{number}{letter}"
+            return f"{base}({paren})" if paren else base
+
         return None
     
     def extract_section_ids(self, text: str) -> Set[str]:

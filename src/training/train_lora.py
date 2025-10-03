@@ -375,11 +375,24 @@ class ProductionQLoRATrainer:
         print(f"   Learning Rate: {config.learning_rate}")
         print(f"   Epochs: {config.num_epochs}")
         print(f"   Scheduler: {config.lr_scheduler_type}")
-        
+
         # Hardware detection and environment info
         self.env_info = self._collect_environment_info()
         self._detect_hardware()
         self._auto_tune_memory_settings()
+
+        # Normalize precision for MPS on older macOS versions
+        try:
+            if (not torch.cuda.is_available()) and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                mac_ver = platform.mac_ver()[0]
+                mac_major = int(mac_ver.split(".")[0]) if mac_ver else 0
+                if self.config.bf16 and mac_major < 14:
+                    print("⚠️  MPS BF16 unsupported on macOS < 14; switching to FP16.")
+                    self.config.bf16 = False
+                    self.config.fp16 = True
+        except Exception as _e:
+            # Non-fatal; default to existing config
+            pass
         
         # Initialize model and tokenizer
         self.tokenizer = self._load_tokenizer()
@@ -532,14 +545,42 @@ class ProductionQLoRATrainer:
             print("⚠️  4-bit quantization disabled (no CUDA or disabled in config)")
         
         # Load model
+        # Choose a safe dtype based on backend
+        preferred_dtype = torch.float32
+        if torch.cuda.is_available():
+            preferred_dtype = torch.bfloat16 if self.config.bf16 else (torch.float16 if self.config.fp16 else torch.float32)
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            # On macOS < 14, BF16 on MPS is not supported
+            try:
+                mac_ver = platform.mac_ver()[0]
+                mac_major = int(mac_ver.split(".")[0]) if mac_ver else 0
+            except Exception:
+                mac_major = 0
+            if self.config.bf16 and mac_major >= 14:
+                preferred_dtype = torch.bfloat16
+            else:
+                if self.config.bf16 and mac_major < 14:
+                    print("⚠️  Forcing FP16 dtype on MPS (macOS < 14).")
+                preferred_dtype = torch.float16 if self.config.fp16 or self.config.bf16 else torch.float32
+        else:
+            preferred_dtype = torch.float32
+
         model = AutoModelForCausalLM.from_pretrained(
             self.config.model_name,
             quantization_config=quantization_config,
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
-            torch_dtype=torch.bfloat16 if self.config.bf16 else torch.float16,
+            torch_dtype=preferred_dtype,
             attn_implementation="flash_attention_2" if torch.cuda.is_available() else "eager"
         )
+        # Move to MPS explicitly if available and not using CUDA
+        if not torch.cuda.is_available() and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            try:
+                model.to("mps")
+            except TypeError as e:
+                # Fallback if dtype/device move still causes issues
+                print(f"⚠️  Could not move model to MPS: {e}. Falling back to CPU.")
+                model.to("cpu")
         
         # Prepare for k-bit training if using quantization
         if quantization_config:

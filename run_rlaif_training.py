@@ -43,6 +43,7 @@ import sys
 import os
 from dataclasses import dataclass, field, asdict
 from enum import Enum
+from src.utils.accelerator import get_accelerator
 
 
 class PipelineStage(Enum):
@@ -176,6 +177,17 @@ class RLAIFTrainingPipeline:
     def setup_output_dirs(self):
         """Create necessary output directories."""
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        # Detect accelerator and log advisory for config tuning
+        try:
+            accel = get_accelerator()
+            self.accelerator = accel
+            if accel.backend == 'mps':
+                if '8B' in self.config.model_name or '7B' in self.config.model_name:
+                    self.logger.warning("🍏 MPS detected: use smaller base model for stability (e.g., SmolLM-135M)")
+            elif accel.backend == 'cpu':
+                self.logger.warning("⚠️ CPU backend detected: DPO/PPO will be slow. Consider using a CUDA GPU machine for training.")
+        except Exception:
+            self.accelerator = None
     
     def save_checkpoint(self):
         """Save current pipeline state."""
@@ -227,6 +239,19 @@ class RLAIFTrainingPipeline:
             self.logger.info("💡 Consider using SmolLM-135M for memory efficiency")
         
         self.logger.info("✅ Prerequisites validated")
+        # Log accelerator info into a run-level metadata file for reproducibility
+        try:
+            info = getattr(self, 'accelerator', None) or get_accelerator()
+            with open(self.config.output_dir / "accelerator.json", 'w') as f:
+                json.dump({
+                    "backend": info.backend,
+                    "device": info.device_str,
+                    "can_use_4bit": info.can_use_4bit,
+                    "recommended_dtype": info.recommended_dtype,
+                    "details": info.details,
+                }, f, indent=2)
+        except Exception:
+            pass
     
     def run_subprocess_with_monitoring(self, cmd: List[str], stage_name: str) -> int:
         """Run subprocess with real-time monitoring and logging."""
@@ -541,6 +566,8 @@ def main():
     """Main entry point."""
     parser = create_parser()
     args = parser.parse_args()
+    # Capture parser defaults to avoid overriding config values with defaults
+    parser_defaults = {a.dest: a.default for a in parser._actions if getattr(a, 'dest', None)}
     
     if not args.command:
         parser.print_help()
@@ -550,10 +577,16 @@ def main():
         # Load configuration
         if hasattr(args, 'config') and args.config:
             config = RLAIFConfig.from_file(Path(args.config))
-            # Override with command line arguments
+            # Override with command line arguments ONLY when they differ from parser defaults
             for key, value in vars(args).items():
-                if value is not None and key != 'config':
-                    setattr(config, key, value)
+                if key == 'config' or key not in RLAIFConfig.__dataclass_fields__:
+                    continue
+                default_val = parser_defaults.get(key, None)
+                if value is not None and value != default_val:
+                    if key in {"chunks_file", "sft_model", "output_dir"}:
+                        setattr(config, key, Path(value))
+                    else:
+                        setattr(config, key, value)
         else:
             # Create config from command line args
             config_dict = {k: v for k, v in vars(args).items() 

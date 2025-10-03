@@ -58,7 +58,13 @@ class TRLSFTTrainer_Production:
     
     def __init__(self, config: QLoRAConfig):
         self.config = config
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Prefer CUDA → MPS → CPU
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
         
         # Set seeds for reproducibility
         set_seed(config.seed)
@@ -117,6 +123,9 @@ class TRLSFTTrainer_Production:
             torch_dtype=torch.bfloat16 if self.config.bf16 else torch.float16,
             attn_implementation="flash_attention_2" if torch.cuda.is_available() else "eager"
         )
+        # Move to MPS explicitly if selected
+        if self.device.type == "mps":
+            model.to(self.device)
         
         # Prepare for k-bit training if using quantization
         if quantization_config:

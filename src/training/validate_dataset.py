@@ -55,7 +55,10 @@ class SFTDatasetValidator:
                         chunk = json.loads(line.strip())
                         section_id = chunk.get('section_id')
                         if section_id and section_id != 'unknown':
-                            valid_section_ids.add(section_id)
+                            # Normalize to canonical so it matches dataset citations
+                            normalized = CanonicalCitationValidator.normalize_section_id(section_id)
+                            if normalized:
+                                valid_section_ids.add(normalized)
                     except json.JSONDecodeError:
                         continue
         
@@ -91,8 +94,9 @@ class SFTDatasetValidator:
             invalid_citations = []
             
             for citation in citations:
-                if citation not in self.valid_section_ids:
-                    invalid_citations.append(citation)
+                normalized = self.citation_validator.normalize_section_id(citation) or citation
+                if normalized not in self.valid_section_ids:
+                    invalid_citations.append(normalized)
             
             if invalid_citations:
                 citation_errors.append(

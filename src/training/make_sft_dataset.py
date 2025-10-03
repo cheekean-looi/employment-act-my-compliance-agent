@@ -46,12 +46,14 @@ from pydantic import ValidationError
 try:
     from .sft_schemas import SFTExample
     from .eval_utils import create_stable_eval_subset
+    from .citation_utils import CanonicalCitationValidator
 except ImportError:
     # For standalone execution
     import sys
     sys.path.append(str(Path(__file__).parent))
     from sft_schemas import SFTExample
     from eval_utils import create_stable_eval_subset
+    from citation_utils import CanonicalCitationValidator
 
 from pydantic import ValidationError
 
@@ -78,6 +80,10 @@ class ProductionSFTGenerator:
         self._set_seeds(seed)
         
         self.chunks = self._load_chunks(chunks_file)
+        # Initialize canonical citation validator using chunks
+        self.validator = CanonicalCitationValidator(
+            valid_sections=CanonicalCitationValidator.load_valid_sections_from_chunks(chunks_file)
+        )
         self.section_to_chunks = self._group_by_section()
         self.valid_section_ids = self._extract_valid_section_ids()
         
@@ -122,19 +128,15 @@ class ProductionSFTGenerator:
         """Group chunks by section ID for stratified sampling."""
         section_groups = defaultdict(list)
         for chunk in self.chunks:
-            section_id = chunk.get('section_id', 'unknown')
-            if section_id and section_id != 'unknown':
-                section_groups[section_id].append(chunk)
+            raw_id = chunk.get('section_id', 'unknown')
+            canonical_id = self.validator.normalize_section_id(raw_id) if raw_id else None
+            if canonical_id:
+                section_groups[canonical_id].append(chunk)
         return dict(section_groups)
     
     def _extract_valid_section_ids(self) -> Set[str]:
-        """Extract all valid section IDs for citation validation."""
-        section_ids = set()
-        for chunk in self.chunks:
-            section_id = chunk.get('section_id')
-            if section_id and section_id != 'unknown':
-                section_ids.add(section_id)
-        return section_ids
+        """Extract all valid (canonical) section IDs for citation validation."""
+        return set(self.validator.valid_sections)
     
     def _build_question_templates(self) -> Dict[str, List[str]]:
         """Build comprehensive question templates by category."""
@@ -219,7 +221,8 @@ class ProductionSFTGenerator:
     
     def _generate_instruction_answer_pair(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
         """Generate a single instruction-answer pair from a chunk."""
-        section_id = chunk['section_id']
+        raw_section_id = chunk['section_id']
+        section_id = self.validator.normalize_section_id(raw_section_id) or raw_section_id
         text = chunk['text']
         
         # Extract key information from chunk
@@ -379,29 +382,47 @@ class ProductionSFTGenerator:
         eval_sections = sections[:eval_sections_count]
         train_sections = sections[eval_sections_count:]
         
-        # Collect examples
-        train_examples = []
-        eval_examples = []
-        
-        for section in train_sections:
-            train_examples.extend(section_examples[section])
-        
-        for section in eval_sections:
-            eval_examples.extend(section_examples[section])
-        
-        # Ensure we have at least 30 eval examples as per Hour 4 requirement
+        # Collect examples by current section split
+        def collect_from_sections(sec_list: List[str]) -> List[Dict[str, Any]]:
+            items: List[Dict[str, Any]] = []
+            for s in sec_list:
+                items.extend(section_examples[s])
+            return items
+
+        train_examples = collect_from_sections(train_sections)
+        eval_examples = collect_from_sections(eval_sections)
+
+        # Ensure we have at least 30 eval examples while preserving section isolation
+        # If eval is short, move whole sections (prefer sections with more examples first)
         if len(eval_examples) < 30:
-            needed = 30 - len(eval_examples)
-            if len(train_examples) >= needed:
-                additional_eval = random.sample(train_examples, needed)
-                train_examples = [ex for ex in train_examples if ex not in additional_eval]
-                eval_examples.extend(additional_eval)
-        
+            # Sort remaining train sections by descending size
+            remaining = sorted(train_sections, key=lambda s: len(section_examples[s]), reverse=True)
+            while len(eval_examples) < 30 and remaining:
+                move_sec = remaining.pop(0)
+                # Move this section from train to eval
+                train_sections.remove(move_sec)
+                eval_sections.append(move_sec)
+                # Rebuild example lists
+                train_examples = collect_from_sections(train_sections)
+                eval_examples = collect_from_sections(eval_sections)
+
         return train_examples, eval_examples
     
     def _calculate_stats(self, examples: List[Dict[str, Any]]) -> DatasetStats:
         """Calculate comprehensive dataset statistics."""
         total = len(examples)
+        if total == 0:
+            # Graceful handling when no valid examples exist
+            return DatasetStats(
+                total_examples=0,
+                section_coverage=0,
+                avg_instruction_length=0.0,
+                avg_answer_length=0.0,
+                pct_with_citations=0.0,
+                pct_numeric_claims=0.0,
+                top_sections=[],
+                citation_validation_rate=0.0,
+            )
         
         # Section coverage
         sections = set()
@@ -427,12 +448,12 @@ class ProductionSFTGenerator:
         return DatasetStats(
             total_examples=total,
             section_coverage=len(sections),
-            avg_instruction_length=np.mean(instruction_lengths),
-            avg_answer_length=np.mean(answer_lengths),
-            pct_with_citations=with_citations / total * 100,
-            pct_numeric_claims=with_numeric / total * 100,
+            avg_instruction_length=float(np.mean(instruction_lengths)) if instruction_lengths else 0.0,
+            avg_answer_length=float(np.mean(answer_lengths)) if answer_lengths else 0.0,
+            pct_with_citations=(with_citations / total * 100) if total > 0 else 0.0,
+            pct_numeric_claims=(with_numeric / total * 100) if total > 0 else 0.0,
             top_sections=section_counts.most_common(5),
-            citation_validation_rate=valid_citations / total * 100
+            citation_validation_rate=(valid_citations / total * 100) if total > 0 else 0.0,
         )
     
     def _validate_examples_with_schema(self, examples: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -440,8 +461,22 @@ class ProductionSFTGenerator:
         validated_examples = []
         errors = []
         warnings = []
-        
+
         for i, example in enumerate(examples):
+            # Normalize citations to canonical form defensively before schema validation
+            try:
+                raw_citations = example.get('citations', []) or []
+                canonical = []
+                for c in raw_citations:
+                    norm = self.validator.normalize_section_id(c)
+                    if norm:
+                        canonical.append(norm)
+                # If normalization produced at least one citation, replace
+                if canonical:
+                    example['citations'] = canonical
+            except Exception:
+                # Leave as-is; schema may catch invalids
+                pass
             try:
                 # Validate with Pydantic schema
                 validated_example = SFTExample(**example)

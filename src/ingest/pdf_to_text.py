@@ -234,7 +234,7 @@ def extract_text_from_pdf(pdf_path: Path, top_band_pct: float = 0.08, bottom_ban
         return None
 
 
-def process_directory(input_dir: Path, output_file: Path, force: bool = False, top_band_pct: float = 0.08, bottom_band_pct: float = 0.08) -> None:
+def process_directory(input_dir: Path, output_file: Path, force: bool = False, top_band_pct: float = 0.08, bottom_band_pct: float = 0.08, limit: Optional[int] = None) -> None:
     """Process all PDF files in directory and save to JSONL with atomic writes."""
     pdf_files = list(input_dir.glob("*.pdf"))
     
@@ -242,7 +242,12 @@ def process_directory(input_dir: Path, output_file: Path, force: bool = False, t
         print(f"No PDF files found in {input_dir}")
         return
     
-    print(f"Found {len(pdf_files)} PDF files to process")
+    original_count = len(pdf_files)
+    if limit is not None and limit > 0:
+        pdf_files = pdf_files[:min(limit, original_count)]
+        print(f"Found {original_count} PDF files; limiting to first {len(pdf_files)} for dev mode")
+    else:
+        print(f"Found {original_count} PDF files to process")
     
     # Check if outputs are up-to-date
     metadata_file = output_file.with_suffix('.metadata.json')
@@ -255,7 +260,8 @@ def process_directory(input_dir: Path, output_file: Path, force: bool = False, t
         'stage': 'pdf_to_text',
         'input_directory': str(input_dir),
         'extraction_method': 'positional_filtering',
-        'header_footer_bands': {'top_pct': top_band_pct, 'bottom_pct': bottom_band_pct}
+        'header_footer_bands': {'top_pct': top_band_pct, 'bottom_pct': bottom_band_pct},
+        'limit': limit
     }
     
     metadata = create_metadata(
@@ -313,6 +319,8 @@ def main():
                         help='Top header band percentage (default: 0.08 = 8%%)')
     parser.add_argument('--bottom-band', type=float, default=0.08,
                         help='Bottom footer band percentage (default: 0.08 = 8%%)')
+    parser.add_argument('--limit', type=int, default=None,
+                        help='Limit number of PDFs to process (dev/testing)')
     
     args = parser.parse_args()
     
@@ -327,7 +335,14 @@ def main():
         print(f"Error: {input_dir} is not a directory")
         return
     
-    process_directory(input_dir, output_file, args.force, getattr(args, 'top_band', 0.08), getattr(args, 'bottom_band', 0.08))
+    process_directory(
+        input_dir,
+        output_file,
+        args.force,
+        getattr(args, 'top_band', 0.08),
+        getattr(args, 'bottom_band', 0.08),
+        getattr(args, 'limit', None)
+    )
 
 
 if __name__ == "__main__":

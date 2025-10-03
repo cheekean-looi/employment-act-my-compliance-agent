@@ -48,6 +48,7 @@ from dataclasses import dataclass, field, asdict
 from enum import Enum
 import tempfile
 import shutil
+from src.utils.accelerator import get_accelerator, log_accelerator
 
 
 class PipelineStage(Enum):
@@ -96,6 +97,7 @@ class CompletePipelineConfig:
     verbose: bool = False
     logging_backends: List[str] = field(default_factory=list)
     cleanup_intermediate: bool = False  # Clean up intermediate files to save space
+    enable_mps_fallback: bool = False   # Opt-in MPS fallback for unsupported ops
     
     @classmethod
     def from_file(cls, config_path: Path) -> 'CompletePipelineConfig':
@@ -146,17 +148,18 @@ class CompletePipeline:
     def __init__(self, config: CompletePipelineConfig):
         self.config = config
         self.state = CompleteState()
-        self.setup_logging()
-        self.setup_output_dirs()
-        
-        # Create timestamped output directory
+        # Determine and create timestamped output directory early so logging can use it
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if config.experiment_name:
             self.output_dir = config.output_dir / f"complete_{config.experiment_name}_{timestamp}"
         else:
             self.output_dir = config.output_dir / f"complete_{timestamp}"
-        
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize logging after output_dir exists
+        self.setup_logging()
+        # Ensure base output root exists (idempotent)
+        self.setup_output_dirs()
         
         # Define key output paths
         self.data_dir = self.output_dir / "data"
@@ -242,18 +245,14 @@ class CompletePipeline:
         if self.config.skip_sft and not self.config.sft_model:
             raise CompletePipelineError("sft_model required when skipping SFT pipeline")
         
-        # Check GPU availability for training stages
+        # Check accelerator availability for training stages
         if not (self.config.skip_sft and self.config.skip_rlaif):
-            try:
-                import torch
-                if not torch.cuda.is_available():
-                    self.logger.warning("⚠️ CUDA not available - training will be very slow")
-                else:
-                    gpu_count = torch.cuda.device_count()
-                    gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
-                    self.logger.info(f"🎮 Found {gpu_count} GPU(s), {gpu_memory:.1f}GB memory")
-            except ImportError:
-                self.logger.warning("⚠️ PyTorch not available - cannot check GPU")
+            info = get_accelerator(enable_mps_fallback=self.config.enable_mps_fallback, do_health_check=True)
+            log_accelerator(self.logger, info)
+            # Surface health check problems explicitly
+            hc = info.details.get("health_check", {"ok": True})
+            if not hc.get("ok", True):
+                self.logger.warning(f"⚠️ Accelerator health check failed on {info.backend}: {hc.get('error')}. Falling back to CPU may be safer.")
         
         self.logger.info("✅ Prerequisites validated")
     
@@ -280,7 +279,9 @@ class CompletePipeline:
         try:
             cmd = [
                 "python", "run_data_pipeline.py", "full",
-                "--config", temp_config
+                "--config", temp_config,
+                "--input", str(self.config.input_path),
+                "--output", str(self.data_dir)
             ]
             
             self.run_subprocess_with_monitoring(cmd, stage_name)
@@ -331,6 +332,25 @@ class CompletePipeline:
             'dry_run': self.config.dry_run,
             **self.config.sft_config
         }
+
+        # Safety defaults for dev/Mac: ensure usable model + trainer when not specified
+        try:
+            from src.utils.accelerator import get_accelerator
+            acc = get_accelerator(enable_mps_fallback=self.config.enable_mps_fallback)
+            # If no model specified in config, choose a small public one for non-CUDA
+            if 'model_name' not in sft_config or not sft_config['model_name']:
+                if acc.backend != 'cuda':
+                    sft_config['model_name'] = "HuggingFaceTB/SmolLM-135M-Instruct"
+            # Prefer TRL SFTTrainer by default for simplicity if not specified
+            if 'use_sfttrainer' not in sft_config:
+                sft_config['use_sfttrainer'] = True
+            # Disable CUDA-only settings on non-CUDA accelerators unless explicitly set
+            if acc.backend != 'cuda':
+                sft_config.setdefault('bf16', False)
+                sft_config.setdefault('use_4bit', False)
+        except Exception:
+            # Best-effort only
+            pass
         
         # Create temporary config file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
@@ -340,7 +360,8 @@ class CompletePipeline:
         try:
             cmd = [
                 "python", "run_sft_pipeline.py", "full",
-                "--config", temp_config
+                "--config", temp_config,
+                "--chunks", str(chunks_file)
             ]
             
             self.run_subprocess_with_monitoring(cmd, stage_name)
@@ -398,8 +419,12 @@ class CompletePipeline:
         try:
             cmd = [
                 "python", "run_rlaif_training.py", "full",
-                "--config", temp_config
+                "--config", temp_config,
+                "--chunks", str(chunks_file)
             ]
+            # If we have an SFT model path already, pass it explicitly to satisfy CLI requirements
+            if sft_model:
+                cmd.extend(["--sft-model", str(sft_model)])
             
             self.run_subprocess_with_monitoring(cmd, stage_name)
             
@@ -663,11 +688,13 @@ Examples:
         """
     )
     
-    subparsers = parser.add_subparsers(dest='command', help='Pipeline commands')
+    # Subcommands
+    subparsers = parser.add_subparsers(dest='command', help='Pipeline commands', required=True)
     
     # Full pipeline
     full_parser = subparsers.add_parser('full', help='Run complete pipeline from PDFs')
-    full_parser.add_argument('--input', dest='input_path', required=True, help='PDF directory')
+    full_parser.add_argument('--input', dest='input_path', type=Path, required=True,
+                             help='Input PDF directory (root containing source PDFs)')
     add_common_args(full_parser)
     
     # Partial pipeline
@@ -684,12 +711,15 @@ Examples:
     resume_parser.add_argument('--from', dest='resume_from', 
                               choices=['data', 'sft', 'rlaif', 'evaluation'], 
                               required=True, help='Resume from this stage')
-    resume_parser.add_argument('--output-dir', required=True, help='Previous output directory')
+    # Use a distinct flag name to avoid colliding with common --output-dir (new outputs)
+    resume_parser.add_argument('--prev-output-dir', dest='prev_output_dir', type=Path, required=True,
+                               help='Path to previous run output directory to resume from')
     add_common_args(resume_parser, require_input=False)
     
     # Development mode
     dev_parser = subparsers.add_parser('dev', help='Development mode (small datasets)')
-    dev_parser.add_argument('--input', dest='input_path', required=True, help='PDF directory')
+    dev_parser.add_argument('--input', dest='input_path', type=Path, required=True,
+                            help='Input PDF directory (root containing source PDFs)')
     add_common_args(dev_parser)
     dev_parser.set_defaults(
         pdf_limit=3,
@@ -715,29 +745,35 @@ Examples:
 
 
 def add_common_args(parser, require_input=True):
-    """Add common arguments to parser."""
+    """Add common arguments to parser with clear groupings and Path validation."""
     
+    # Groups for better help formatting
+    cfg = parser.add_argument_group('Config')
+    io = parser.add_argument_group('IO')
+    rt = parser.add_argument_group('Runtime Overrides')
+    mon = parser.add_argument_group('Monitoring')
+
     # Configuration
-    parser.add_argument('--config', help='Path to configuration YAML/JSON file')
+    cfg.add_argument('--config', type=Path,
+                     help='Configuration file (YAML or JSON) to override defaults')
     
-    # Input/output
-    if require_input:
-        parser.add_argument('--input', dest='input_path', help='Input PDF directory')
-    parser.add_argument('--output-dir', default="outputs", help='Output directory')
-    parser.add_argument('--experiment-name', help='Experiment name for organization')
+    # IO (note: subparsers add --input explicitly to avoid duplication)
+    io.add_argument('--output-dir', type=Path, default=Path("outputs"),
+                   help='Base output directory (timestamped subfolder created per run)')
+    io.add_argument('--experiment-name', help='Optional experiment name used in output folder naming')
     
-    # Quick parameter overrides
-    parser.add_argument('--pdf-limit', type=int, help='Limit PDFs processed (dev mode)')
-    parser.add_argument('--dataset-size', type=int, help='SFT dataset size')
-    parser.add_argument('--pairs-size', type=int, help='DPO pairs size')
-    parser.add_argument('--epochs', type=int, help='SFT epochs')
-    parser.add_argument('--dpo-epochs', type=int, help='DPO epochs')
-    parser.add_argument('--ppo-prompts', type=int, help='PPO prompts')
+    # Runtime overrides (quick knobs for sizes/epochs)
+    rt.add_argument('--pdf-limit', type=int, help='Limit number of PDFs to process (dev mode)')
+    rt.add_argument('--dataset-size', type=int, help='Target SFT dataset size')
+    rt.add_argument('--pairs-size', type=int, help='Preference pair count for DPO')
+    rt.add_argument('--epochs', type=int, help='SFT training epochs')
+    rt.add_argument('--dpo-epochs', type=int, help='DPO training epochs')
+    rt.add_argument('--ppo-prompts', type=int, help='Number of prompts for PPO rollouts')
+    rt.add_argument('--enable-mps-fallback', action='store_true', help='Enable MPS fallback for unsupported ops (Apple Silicon)')
     
-    # Advanced options
-    parser.add_argument('--logging-backends', action='append', 
-                       choices=['tensorboard', 'wandb'], default=[],
-                       help='Logging backends (can specify multiple)')
+    # Monitoring
+    mon.add_argument('--logging-backends', action='append', choices=['tensorboard', 'wandb'], default=[],
+                    help='Enable logging backends (can specify multiple, e.g., --logging-backends wandb --logging-backends tensorboard)')
     parser.add_argument('--cleanup-intermediate', action='store_true',
                        help='Clean up intermediate files to save space')
     parser.add_argument('--dry-run', action='store_true', help='Show commands without executing')
