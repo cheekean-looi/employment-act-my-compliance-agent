@@ -790,7 +790,14 @@ class ProductionQLoRATrainer:
         else:
             print(f"🔧 Using adamw_torch optimizer")
         
-        training_args = TrainingArguments(
+        # Transformers v5 renamed evaluation_strategy -> eval_strategy
+        try:
+            import transformers as _tf
+            is_v5 = version.parse(getattr(_tf, "__version__", "0")) >= version.parse("5.0.0")
+        except Exception:
+            is_v5 = False
+
+        ta_kwargs = dict(
             output_dir=str(output_dir),
             num_train_epochs=self.config.num_epochs,
             per_device_train_batch_size=self.config.per_device_train_batch_size,
@@ -804,11 +811,10 @@ class ProductionQLoRATrainer:
             logging_steps=self.config.logging_steps,
             eval_steps=self.config.eval_steps,
             save_steps=self.config.save_steps,
-            evaluation_strategy=self.config.eval_strategy,
             save_strategy=self.config.save_strategy,
             load_best_model_at_end=self.config.load_best_model_at_end,
             metric_for_best_model=self.config.metric_for_best_model,
-            greater_is_better=False,  # For loss
+            greater_is_better=False,
             bf16=self.config.bf16,
             fp16=self.config.fp16,
             gradient_checkpointing=self.config.gradient_checkpointing,
@@ -816,11 +822,16 @@ class ProductionQLoRATrainer:
             remove_unused_columns=False,
             report_to=self.config.report_to,
             seed=self.config.seed,
-            optim=optim,  # Use appropriate optimizer
-            # Checkpointing
-            save_total_limit=3,  # Keep only 3 best checkpoints
-            resume_from_checkpoint=True,  # Enable resume
+            optim=optim,
+            save_total_limit=3,
+            resume_from_checkpoint=True,
         )
+        if is_v5:
+            ta_kwargs["eval_strategy"] = self.config.eval_strategy
+        else:
+            ta_kwargs["evaluation_strategy"] = self.config.eval_strategy
+
+        training_args = TrainingArguments(**ta_kwargs)
         
         # Data collator
         data_collator = DataCollatorForLanguageModeling(
