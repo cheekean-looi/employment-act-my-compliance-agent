@@ -13,7 +13,6 @@ dependencies:
 
   # Vector search + retrieval
   - faiss-cpu=1.9.0
-  - sentence-transformers
   - rank-bm25
 
   # YAML/config
@@ -31,6 +30,7 @@ dependencies:
   - pip
   - pip:
       # HF + training
+      - "sentence-transformers>=3.0.0"
       - transformers>=4.43
       - accelerate
       - peft
@@ -38,6 +38,7 @@ dependencies:
       - datasets
       - bitsandbytes
       - sentencepiece
+      - matplotlib
 
       # API / server
       - fastapi

@@ -565,13 +565,31 @@ class ProductionQLoRATrainer:
         else:
             preferred_dtype = torch.float32
 
+        # Select attention implementation with safe defaults on T4 (no FlashAttention 2)
+        attn_env = os.getenv("ATTN_IMPL")
+        if attn_env in {"flash_attention_2", "sdpa", "eager"}:
+            attn_impl = attn_env
+        else:
+            use_fa2 = os.getenv("HF_USE_FLASH_ATTENTION_2", "1") != "0"
+            if torch.cuda.is_available() and use_fa2:
+                # Transformers will fall back internally if FA2 truly unavailable, but
+                # T4 (sm_75) lacks support — prefer SDPA in that case.
+                try:
+                    import torch.cuda
+                    cc = torch.cuda.get_device_capability(0)[0]
+                    attn_impl = "flash_attention_2" if cc >= 8 else "sdpa"
+                except Exception:
+                    attn_impl = "sdpa"
+            else:
+                attn_impl = "sdpa" if torch.cuda.is_available() else "eager"
+
         model = AutoModelForCausalLM.from_pretrained(
             self.config.model_name,
             quantization_config=quantization_config,
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
             torch_dtype=preferred_dtype,
-            attn_implementation="flash_attention_2" if torch.cuda.is_available() else "eager"
+            attn_implementation=attn_impl
         )
         # Move to MPS explicitly if available and not using CUDA
         if not torch.cuda.is_available() and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
