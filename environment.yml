@@ -1,26 +1,54 @@
-name: faiss-env
+name: ea
 channels:
+  - pytorch
+  - nvidia
   - conda-forge
   - defaults
 dependencies:
+  # Core Python + numeric stack
   - python=3.12
-  - faiss-cpu=1.9.0
-  - rank-bm25
-  - sentence-transformers
+  - numpy=1.26.4           # FAISS 1.9.x requires NumPy < 2
   - pandas
   - tqdm
-  - numpy=1.26.4
+
+  # Vector search + retrieval
+  - faiss-cpu=1.9.0
+  - sentence-transformers
+  - rank-bm25
+
+  # YAML/config
+  - pyyaml
+
+  # PyTorch with CUDA 12.1 (uses NVIDIA channel runtime/libs)
+  - pytorch
+  - torchvision
+  - pytorch-cuda=12.1
+
+  # Optional: classic ML utils
+  - scikit-learn
+
+  # Pip extras
   - pip
   - pip:
-    - transformers>=4.43
-    - accelerate
-    - peft
-    - trl
-    - datasets
-    - fastapi
-    - uvicorn
-    - pydantic
-    - python-dotenv
-    - streamlit
-    - vllm
-    - PyMuPDF
+      # HF + training
+      - transformers>=4.43
+      - accelerate
+      - peft
+      - trl
+      - datasets
+      - bitsandbytes
+      - sentencepiece
+
+      # API / server
+      - fastapi
+      - uvicorn[standard]
+      - gunicorn
+      - httpx
+      - backoff
+      - redis
+      - python-dotenv
+
+      # UI / tools / inference
+      - streamlit
+      - vllm
+      - pymupdf       # aka PyMuPDF
