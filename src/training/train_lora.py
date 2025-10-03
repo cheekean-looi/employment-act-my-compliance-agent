@@ -20,6 +20,7 @@ import gc
 import platform
 import sys
 from packaging import version
+from inspect import signature as _sig
 
 # ML imports
 from datasets import Dataset, load_dataset
@@ -790,13 +791,6 @@ class ProductionQLoRATrainer:
         else:
             print(f"🔧 Using adamw_torch optimizer")
         
-        # Transformers v5 renamed evaluation_strategy -> eval_strategy
-        try:
-            import transformers as _tf
-            is_v5 = version.parse(getattr(_tf, "__version__", "0")) >= version.parse("5.0.0")
-        except Exception:
-            is_v5 = False
-
         ta_kwargs = dict(
             output_dir=str(output_dir),
             num_train_epochs=self.config.num_epochs,
@@ -826,9 +820,16 @@ class ProductionQLoRATrainer:
             save_total_limit=3,
             resume_from_checkpoint=True,
         )
-        if is_v5:
-            ta_kwargs["eval_strategy"] = self.config.eval_strategy
-        else:
+        # Transformers v5 renamed evaluation_strategy -> eval_strategy. Detect via signature.
+        try:
+            params = _sig(TrainingArguments.__init__).parameters
+            if "eval_strategy" in params:
+                ta_kwargs["eval_strategy"] = self.config.eval_strategy
+            elif "evaluation_strategy" in params:
+                ta_kwargs["evaluation_strategy"] = self.config.eval_strategy
+            # else: neither present; skip adding
+        except Exception:
+            # Fallback to old name
             ta_kwargs["evaluation_strategy"] = self.config.eval_strategy
 
         training_args = TrainingArguments(**ta_kwargs)
