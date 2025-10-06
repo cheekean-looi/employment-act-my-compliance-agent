@@ -54,6 +54,14 @@ except ImportError:
     from schemas import TrainingConfig, EnvironmentInfo, EvaluationMetrics, CitationMetrics
     from eval_utils import load_stable_eval_subset
 
+# Load environment variables from a .env file if present (repo root or CWD)
+try:
+    from dotenv import load_dotenv
+    # load from CWD; if running from repo root, this picks up .env there
+    load_dotenv()
+except Exception:
+    pass
+
 
 class CitationEvaluationCallback(TrainerCallback):
     """Callback to evaluate citation metrics during training."""
@@ -571,7 +579,8 @@ class ProductionQLoRATrainer:
         if attn_env in {"flash_attention_2", "sdpa", "eager"}:
             attn_impl = attn_env
         else:
-            use_fa2 = os.getenv("HF_USE_FLASH_ATTENTION_2", "1") != "0"
+            # Default to disabled unless explicitly enabled via env
+            use_fa2 = os.getenv("HF_USE_FLASH_ATTENTION_2", "0") != "0"
             if torch.cuda.is_available() and use_fa2:
                 # Transformers will fall back internally if FA2 truly unavailable, but
                 # T4 (sm_75) lacks support — prefer SDPA in that case.

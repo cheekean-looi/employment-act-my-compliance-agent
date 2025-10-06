@@ -4,6 +4,10 @@
 
 set -e
 
+# Ensure project src is on PYTHONPATH so local shims (e.g., pyairports) are importable
+PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
+
 # Configuration from environment or defaults
 MODEL_NAME=${MODEL_NAME:-"Qwen/Qwen2.5-1.5B-Instruct"}
 ADAPTER_PATH=${ADAPTER_PATH:-""}

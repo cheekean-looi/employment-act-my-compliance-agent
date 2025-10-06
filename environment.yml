@@ -10,6 +10,7 @@ dependencies:
   - numpy=1.26.4           # FAISS 1.9.x requires NumPy < 2
   - pandas
   - tqdm
+  - scipy=1.11.*           # Compatible with NumPy 1.26.x on Py3.12
 
   # Vector search + retrieval
   - faiss-cpu=1.9.0
@@ -20,7 +21,6 @@ dependencies:
 
   # PyTorch with CUDA 12.1 (uses NVIDIA channel runtime/libs)
   - pytorch
-  - torchvision
   - pytorch-cuda=12.1
 
   # Optional: classic ML utils
@@ -51,5 +51,12 @@ dependencies:
 
       # UI / tools / inference
       - streamlit
-      - vllm
       - pymupdf       # aka PyMuPDF
+      # Note: vLLM is large; install only if needed
+      # - "vllm==0.5.*"
+
+      # Optional: torchvision (if you truly need it); prefer Python 3.11
+      # - torchvision
+
+      # Optional: FlashAttention 2 (L4/Ampere+). Prefer SDPA if install fails.
+      # - flash-attn  # may require --no-build-isolation and matching Torch/CUDA
