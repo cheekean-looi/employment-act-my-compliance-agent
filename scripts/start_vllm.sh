@@ -142,3 +142,23 @@ echo "Command: $VLLM_CMD"
 echo ""
 
 exec $VLLM_CMD
+# Prevent concurrent starts: acquire a non-blocking lock
+LOCK_FILE="$PROJECT_ROOT/.vllm_start.lock"
+exec {LOCK_FD}>"$LOCK_FILE" || true
+if ! flock -n "$LOCK_FD"; then
+  echo "❌ Another vLLM start is in progress (model may be loading)."
+  echo "   Try again in a few seconds, or run with FORCE=1 to terminate any prior attempt."
+  # Optional force kill of any prior vLLM/uvicorn for the selected port
+  if [ "${FORCE:-0}" = "1" ]; then
+    echo "⚠️  FORCE=1 set: terminating prior vLLM/uvicorn processes for this port if any..."
+    pgrep -fa "vllm serve" | grep -E -- "--port[ =]${VLLM_PORT:-}" | awk '{print $1}' | xargs -r kill -9 || true
+    pkill -f "uvicorn .*:${VLLM_PORT:-}" || true
+    # Try to acquire lock again
+    if ! flock -n "$LOCK_FD"; then
+      echo "❌ Could not acquire start lock even after FORCE kill. Exiting."
+      exit 1
+    fi
+  else
+    exit 1
+  fi
+fi
