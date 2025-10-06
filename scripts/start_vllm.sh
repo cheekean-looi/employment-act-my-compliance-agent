@@ -26,6 +26,16 @@ echo "Max model length: $MAX_MODEL_LEN"
 # Check if model exists or needs download
 echo "📦 Checking model availability..."
 
+# Ensure vLLM scheduling constraint: max_num_batched_tokens >= max_model_len
+if [[ "$MAX_MODEL_LEN" =~ ^[0-9]+$ ]] && [[ "$MAX_NUM_BATCHED_TOKENS" =~ ^[0-9]+$ ]]; then
+    if (( MAX_NUM_BATCHED_TOKENS < MAX_MODEL_LEN )); then
+        echo "⚙️  Adjusting MAX_NUM_BATCHED_TOKENS from $MAX_NUM_BATCHED_TOKENS to $MAX_MODEL_LEN to satisfy vLLM constraints"
+        MAX_NUM_BATCHED_TOKENS="$MAX_MODEL_LEN"
+    fi
+else
+    MAX_NUM_BATCHED_TOKENS="$MAX_MODEL_LEN"
+fi
+
 # Base vLLM command
 VLLM_CMD="vllm serve $MODEL_NAME \
     --host $HOST \
