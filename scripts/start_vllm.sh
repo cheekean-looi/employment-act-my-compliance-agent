@@ -8,6 +8,10 @@ set -e
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
+# Harden environment to avoid accidental multi-worker spawns
+unset WEB_CONCURRENCY
+export VLLM_WORKER_MULTIPROCESSING=0
+
 # Load .env so port/host settings (and others) are honored,
 # but allow inline environment variables to override .env.
 PRE_VLLM_PORT="$VLLM_PORT"

@@ -40,10 +40,10 @@ dependencies:
       - sentencepiece
       - matplotlib
 
-      # API / server
-      - fastapi
-      - "uvicorn[standard]==0.30.*"
-      - "starlette>=0.40,<0.49"
+      # API / server (pins compatible with vLLM 0.5.5 shutdown path)
+      - "fastapi==0.111.*"
+      - "uvicorn[standard]==0.29.*"
+      - "starlette==0.37.2"
       - gunicorn
       - httpx
       - backoff
