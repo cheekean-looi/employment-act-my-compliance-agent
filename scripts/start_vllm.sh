@@ -31,6 +31,7 @@ MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-"2048"}
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-"1"}
 ENFORCE_EAGER=${ENFORCE_EAGER:-"0"}
 DISABLE_FRONTEND_MP=${DISABLE_FRONTEND_MP:-"0"}
+PORT_AUTOINC=${PORT_AUTOINC:-"0"}
 
 echo "🚀 Starting vLLM server for Employment Act Malaysia agent"
 echo "Model: $MODEL_NAME"
@@ -86,6 +87,39 @@ fi
 # Health check endpoint
 echo "🏥 Health check will be available at: http://$HOST:$PORT/health"
 echo "📊 Metrics will be available at: http://$HOST:$PORT/metrics"
+
+# Preflight: check if port is free; optionally auto-increment to a free one
+check_port() {
+  local p="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -lnt "sport = :$p" | grep -q ":$p" && return 1 || return 0
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$p" -sTCP:LISTEN >/dev/null 2>&1 && return 1 || return 0
+  else
+    return 0
+  fi
+}
+
+if ! check_port "$PORT"; then
+  if [ "$PORT_AUTOINC" = "1" ]; then
+    echo "⚠️  Port $PORT in use; searching for a free port..."
+    START_PORT="$PORT"
+    for try in $(seq 1 20); do
+      PORT=$((PORT+1))
+      if check_port "$PORT"; then
+        echo "✅ Using alternate port: $PORT"
+        break
+      fi
+    done
+    if ! check_port "$PORT"; then
+      echo "❌ No free port found starting from $START_PORT. Set PORT_AUTOINC=0 and choose a port manually."
+      exit 1
+    fi
+  else
+    echo "❌ Port $PORT is in use. Set VLLM_PORT to a free port or run with PORT_AUTOINC=1."
+    exit 1
+  fi
+fi
 
 # Start server
 echo "🎯 Starting vLLM server..."
