@@ -8,6 +8,14 @@ set -e
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
+# Load .env so port/host settings (and others) are honored
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$PROJECT_ROOT/.env"
+  set +a
+fi
+
 # Force a safe CUDA allocator config (disable expandable segments)
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:64,expandable_segments:False"
 echo "Allocator config: PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF"
