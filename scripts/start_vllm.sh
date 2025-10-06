@@ -8,13 +8,23 @@ set -e
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
-# Load .env so port/host settings (and others) are honored
+# Load .env so port/host settings (and others) are honored,
+# but allow inline environment variables to override .env.
+PRE_VLLM_PORT="$VLLM_PORT"
+PRE_VLLM_HOST="$VLLM_HOST"
+PRE_DISABLE_FRONTEND_MP="$DISABLE_FRONTEND_MP"
+PRE_PORT_AUTOINC="$PORT_AUTOINC"
 if [ -f "$PROJECT_ROOT/.env" ]; then
   set -a
   # shellcheck disable=SC1090
   source "$PROJECT_ROOT/.env"
   set +a
 fi
+# Re-apply inline overrides if they were provided
+[ -n "$PRE_VLLM_PORT" ] && export VLLM_PORT="$PRE_VLLM_PORT"
+[ -n "$PRE_VLLM_HOST" ] && export VLLM_HOST="$PRE_VLLM_HOST"
+[ -n "$PRE_DISABLE_FRONTEND_MP" ] && export DISABLE_FRONTEND_MP="$PRE_DISABLE_FRONTEND_MP"
+[ -n "$PRE_PORT_AUTOINC" ] && export PORT_AUTOINC="$PRE_PORT_AUTOINC"
 
 # Force a safe CUDA allocator config (disable expandable segments)
 export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:64,expandable_segments:False"
