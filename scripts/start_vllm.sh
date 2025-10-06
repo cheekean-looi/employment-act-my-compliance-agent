@@ -8,10 +8,9 @@ set -e
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
-# Set a safe CUDA allocator config unless explicitly overridden
-if [ -z "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
-  export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:64,expandable_segments:False"
-fi
+# Force a safe CUDA allocator config (disable expandable segments)
+export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:64,expandable_segments:False"
+echo "Allocator config: PYTORCH_CUDA_ALLOC_CONF=$PYTORCH_CUDA_ALLOC_CONF"
 
 # Configuration from environment or defaults
 MODEL_NAME=${MODEL_NAME:-"Qwen/Qwen2.5-1.5B-Instruct"}
