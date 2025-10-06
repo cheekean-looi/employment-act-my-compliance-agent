@@ -30,8 +30,8 @@ GPU_MEMORY_UTIL=${GPU_MEMORY_UTIL:-"0.9"}
 MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-"2048"}
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-"1"}
 ENFORCE_EAGER=${ENFORCE_EAGER:-"0"}
-DISABLE_FRONTEND_MP=${DISABLE_FRONTEND_MP:-"0"}
-PORT_AUTOINC=${PORT_AUTOINC:-"0"}
+DISABLE_FRONTEND_MP=${DISABLE_FRONTEND_MP:-"1"}
+PORT_AUTOINC=${PORT_AUTOINC:-"1"}
 
 echo "🚀 Starting vLLM server for Employment Act Malaysia agent"
 echo "Model: $MODEL_NAME"
@@ -120,6 +120,11 @@ if ! check_port "$PORT"; then
     exit 1
   fi
 fi
+
+# Make the effective port visible to child processes and print helpers
+export VLLM_PORT="$PORT"
+echo "🔌 Effective VLLM_PORT=$VLLM_PORT"
+echo "   Tip: point API with VLLM_BASE_URL=http://localhost:$VLLM_PORT"
 
 # Start server
 echo "🎯 Starting vLLM server..."
