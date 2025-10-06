@@ -42,7 +42,8 @@ dependencies:
 
       # API / server
       - fastapi
-      - uvicorn[standard]
+      - "uvicorn[standard]==0.30.*"
+      - "starlette>=0.40,<0.49"
       - gunicorn
       - httpx
       - backoff
