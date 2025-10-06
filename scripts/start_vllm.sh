@@ -8,6 +8,11 @@ set -e
 PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$PROJECT_ROOT/src:$PYTHONPATH"
 
+# Set a safe CUDA allocator config unless explicitly overridden
+if [ -z "${PYTORCH_CUDA_ALLOC_CONF:-}" ]; then
+  export PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:64,expandable_segments:False"
+fi
+
 # Configuration from environment or defaults
 MODEL_NAME=${MODEL_NAME:-"Qwen/Qwen2.5-1.5B-Instruct"}
 ADAPTER_PATH=${ADAPTER_PATH:-""}
@@ -17,6 +22,7 @@ MAX_MODEL_LEN=${MAX_MODEL_LEN:-"4096"}
 GPU_MEMORY_UTIL=${GPU_MEMORY_UTIL:-"0.9"}
 MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-"2048"}
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-"1"}
+ENFORCE_EAGER=${ENFORCE_EAGER:-"0"}
 
 echo "🚀 Starting vLLM server for Employment Act Malaysia agent"
 echo "Model: $MODEL_NAME"
@@ -46,6 +52,11 @@ VLLM_CMD="vllm serve $MODEL_NAME \
     --tensor-parallel-size $TENSOR_PARALLEL_SIZE \
     --disable-log-stats \
     --trust-remote-code"
+
+if [ "$ENFORCE_EAGER" = "1" ]; then
+    echo "⚙️  Enforcing eager mode for stability"
+    VLLM_CMD="$VLLM_CMD --enforce-eager"
+fi
 
 # Add LoRA adapter if provided
 if [ -n "$ADAPTER_PATH" ] && [ -d "$ADAPTER_PATH" ]; then
