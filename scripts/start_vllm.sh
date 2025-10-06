@@ -30,6 +30,7 @@ GPU_MEMORY_UTIL=${GPU_MEMORY_UTIL:-"0.9"}
 MAX_NUM_BATCHED_TOKENS=${MAX_NUM_BATCHED_TOKENS:-"2048"}
 TENSOR_PARALLEL_SIZE=${TENSOR_PARALLEL_SIZE:-"1"}
 ENFORCE_EAGER=${ENFORCE_EAGER:-"0"}
+DISABLE_FRONTEND_MP=${DISABLE_FRONTEND_MP:-"0"}
 
 echo "🚀 Starting vLLM server for Employment Act Malaysia agent"
 echo "Model: $MODEL_NAME"
@@ -63,6 +64,11 @@ VLLM_CMD="vllm serve $MODEL_NAME \
 if [ "$ENFORCE_EAGER" = "1" ]; then
     echo "⚙️  Enforcing eager mode for stability"
     VLLM_CMD="$VLLM_CMD --enforce-eager"
+fi
+
+if [ "$DISABLE_FRONTEND_MP" = "1" ]; then
+    echo "🔧 Disabling frontend multiprocessing to avoid port bind races"
+    VLLM_CMD="$VLLM_CMD --disable-frontend-multiprocessing"
 fi
 
 # Add LoRA adapter if provided
