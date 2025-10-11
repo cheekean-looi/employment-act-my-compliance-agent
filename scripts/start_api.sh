@@ -50,7 +50,7 @@ if curl -s -f "$VLLM_URL/health" > /dev/null 2>&1; then
     echo "✅ vLLM server is ready"
 else
     echo "⚠️  Warning: vLLM server not ready at $VLLM_URL"
-    echo "💡 Start vLLM server first: ./scripts/start_vllm.sh"
+    echo "💡 Start vLLM server first: ./scripts/run_stack_docker.sh up (or run the vLLM container manually)"
     echo "🔄 API will retry vLLM connection on first request"
 fi
 
