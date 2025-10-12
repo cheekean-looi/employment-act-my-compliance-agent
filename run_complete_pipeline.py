@@ -767,6 +767,13 @@ def add_common_args(parser, require_input=True):
     rt.add_argument('--dataset-size', type=int, help='Target SFT dataset size')
     rt.add_argument('--pairs-size', type=int, help='Preference pair count for DPO')
     rt.add_argument('--epochs', type=int, help='SFT training epochs')
+    # Low-memory SFT overrides
+    rt.add_argument('--sft-batch-size', dest='sft_batch_size', type=int,
+                   help='SFT per-device batch size (memory control)')
+    rt.add_argument('--sft-grad-accum', dest='sft_grad_accum', type=int,
+                   help='SFT gradient accumulation steps (memory control)')
+    rt.add_argument('--sft-max-length', dest='sft_max_length', type=int,
+                   help='SFT max sequence length (memory control)')
     rt.add_argument('--dpo-epochs', type=int, help='DPO training epochs')
     rt.add_argument('--ppo-prompts', type=int, help='Number of prompts for PPO rollouts')
     rt.add_argument('--enable-mps-fallback', action='store_true', help='Enable MPS fallback for unsupported ops (Apple Silicon)')
@@ -805,6 +812,14 @@ def main():
                             config.data_config[key] = value
                         elif key in ['dataset_size', 'epochs']:
                             config.sft_config[key] = value
+                        elif key in ['sft_batch_size', 'sft_grad_accum', 'sft_max_length']:
+                            # Map CLI names to SFT config keys
+                            mapping = {
+                                'sft_batch_size': 'batch_size',
+                                'sft_grad_accum': 'gradient_accumulation_steps',
+                                'sft_max_length': 'max_length',
+                            }
+                            config.sft_config[mapping[key]] = value
                         elif key in ['pairs_size', 'dpo_epochs', 'ppo_prompts']:
                             config.rlaif_config[key] = value
         else:
@@ -823,6 +838,13 @@ def main():
                         data_config['pdf_limit'] = value
                     elif key in ['dataset_size', 'epochs']:
                         sft_config[key] = value
+                    elif key in ['sft_batch_size', 'sft_grad_accum', 'sft_max_length']:
+                        mapping = {
+                            'sft_batch_size': 'batch_size',
+                            'sft_grad_accum': 'gradient_accumulation_steps',
+                            'sft_max_length': 'max_length',
+                        }
+                        sft_config[mapping[key]] = value
                     elif key in ['pairs_size', 'dpo_epochs', 'ppo_prompts']:
                         rlaif_config[key] = value
             

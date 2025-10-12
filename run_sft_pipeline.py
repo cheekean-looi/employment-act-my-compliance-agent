@@ -341,6 +341,8 @@ class SFTPipeline:
             "--epochs", str(self.config.epochs),
             "--learning-rate", str(self.config.learning_rate),
             "--batch-size", str(self.config.batch_size),
+            "--grad-accumulation", str(self.config.gradient_accumulation_steps),
+            "--max-length", str(self.config.max_length),
             "--lora-rank", str(self.config.lora_rank),
             "--lora-alpha", str(self.config.lora_alpha),
             "--seed", str(self.config.dataset_seed)
