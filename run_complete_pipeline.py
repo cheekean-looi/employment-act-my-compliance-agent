@@ -368,8 +368,14 @@ class CompletePipeline:
             
             # Find the actual SFT output directory (timestamped)
             sft_outputs = list(self.sft_dir.glob("sft_*"))
+            if not sft_outputs:
+                # Fallback: some environments may write to default repo-relative outputs/
+                fallback_root = Path("outputs")
+                if fallback_root.exists():
+                    sft_outputs = list(fallback_root.glob("sft_*"))
             if sft_outputs and not self.config.dry_run:
-                sft_model_dir = max(sft_outputs, key=lambda x: x.stat().st_mtime) / "lora_sft"
+                sft_root = max(sft_outputs, key=lambda x: x.stat().st_mtime)
+                sft_model_dir = sft_root / "lora_sft"
                 if not sft_model_dir.exists():
                     raise CompletePipelineError(f"SFT model not found in: {sft_model_dir}")
                 self.state.sft_model = sft_model_dir
