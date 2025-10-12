@@ -21,8 +21,11 @@ if ! docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi; 
 fi
 
 echo "==> torch CUDA availability inside vLLM image"
-docker run --rm --gpus all vllm/vllm-openai:0.5.5 \
-  python - <<'PY'
+VLLM_IMAGE_DEFAULT="vllm/vllm-openai:0.5.5"
+VLLM_IMAGE_FALLBACK="vllm/vllm-openai:latest"
+VLLM_IMAGE="${VLLM_IMAGE:-$VLLM_IMAGE_DEFAULT}"
+
+if ! docker run --rm --gpus all "$VLLM_IMAGE" python - <<'PY'
 import torch
 print('torch version:', torch.__version__)
 print('cuda available:', torch.cuda.is_available())
@@ -30,6 +33,16 @@ print('gpu count:', torch.cuda.device_count())
 if torch.cuda.is_available():
     print('device 0:', torch.cuda.get_device_name(0))
 PY
+then
+  echo "vLLM image $VLLM_IMAGE not available or failed. Trying $VLLM_IMAGE_FALLBACK..." >&2
+  docker run --rm --gpus all "$VLLM_IMAGE_FALLBACK" python - <<'PY'
+import torch
+print('torch version:', torch.__version__)
+print('cuda available:', torch.cuda.is_available())
+print('gpu count:', torch.cuda.device_count())
+if torch.cuda.is_available():
+    print('device 0:', torch.cuda.get_device_name(0))
+PY
+fi
 
 echo "All checks completed."
-

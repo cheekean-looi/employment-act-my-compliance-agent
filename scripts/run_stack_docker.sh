@@ -23,7 +23,7 @@ if [[ -f "$PROJECT_ROOT/.env" ]]; then
 fi
 
 # Defaults (overridable via .env or inline)
-IMAGE=${VLLM_DOCKER_IMAGE:-"vllm/vllm-openai:0.5.5"}
+IMAGE=${VLLM_DOCKER_IMAGE:-"vllm/vllm-openai:latest"}
 VLLM_NAME=${VLLM_CONTAINER_NAME:-"vllm-server"}
 VLLM_PORT=${VLLM_PORT:-8025}
 API_PORT=${API_PORT:-8018}
@@ -48,6 +48,12 @@ start_vllm() {
   echo "🔌 vLLM port:  $VLLM_PORT"
   echo "📦 HF cache:   $HF_HOME_DIR"
   echo "🧠 Model:      $MODEL"
+  # Pre-pull to surface image tag issues early; fallback to latest if pull fails
+  if ! docker pull "$IMAGE" >/dev/null 2>&1; then
+    echo "⚠️  Unable to pull $IMAGE. Falling back to vllm/vllm-openai:latest"
+    IMAGE="vllm/vllm-openai:latest"
+    docker pull "$IMAGE" >/dev/null 2>&1 || true
+  fi
   set -x
   docker run --rm -d \
     --name "$VLLM_NAME" \
