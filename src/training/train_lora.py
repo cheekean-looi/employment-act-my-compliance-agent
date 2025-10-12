@@ -1092,6 +1092,18 @@ class ProductionQLoRATrainer:
                 if run_dirs:
                     tensorboard_run_dir = str(max(run_dirs, key=lambda x: x.stat().st_mtime).relative_to(output_dir))
         
+        # Normalize environment info to a dict (supports Pydantic v1/v2, dataclass, or dict)
+        try:
+            env_info_block = self.env_info.model_dump()  # Pydantic v2
+        except Exception:
+            try:
+                env_info_block = self.env_info.dict()  # Pydantic v1
+            except Exception:
+                try:
+                    env_info_block = asdict(self.env_info)  # dataclass
+                except Exception:
+                    env_info_block = self.env_info if isinstance(self.env_info, dict) else {}
+
         metadata = {
             "training_info": {
                 "timestamp": datetime.now().isoformat(),
@@ -1105,7 +1117,7 @@ class ProductionQLoRATrainer:
                 "logging_backend": self.config.report_to,
                 "tensorboard_run_dir": tensorboard_run_dir,
             },
-            "environment": asdict(self.env_info),
+            "environment": env_info_block,
             "results": {
                 "train": train_results,
                 "eval": eval_results,
