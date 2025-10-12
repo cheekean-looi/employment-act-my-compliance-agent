@@ -25,7 +25,8 @@ VLLM_IMAGE_DEFAULT="vllm/vllm-openai:0.5.5"
 VLLM_IMAGE_FALLBACK="vllm/vllm-openai:latest"
 VLLM_IMAGE="${VLLM_IMAGE:-$VLLM_IMAGE_DEFAULT}"
 
-if ! docker run --rm --gpus all "$VLLM_IMAGE" python - <<'PY'
+# Many vLLM images set an entrypoint to the API server; override to python for the test
+if ! docker run --rm --gpus all --entrypoint python "$VLLM_IMAGE" - <<'PY'
 import torch
 print('torch version:', torch.__version__)
 print('cuda available:', torch.cuda.is_available())
@@ -35,7 +36,7 @@ if torch.cuda.is_available():
 PY
 then
   echo "vLLM image $VLLM_IMAGE not available or failed. Trying $VLLM_IMAGE_FALLBACK..." >&2
-  docker run --rm --gpus all "$VLLM_IMAGE_FALLBACK" python - <<'PY'
+  docker run --rm --gpus all --entrypoint python "$VLLM_IMAGE_FALLBACK" - <<'PY'
 import torch
 print('torch version:', torch.__version__)
 print('cuda available:', torch.cuda.is_available())

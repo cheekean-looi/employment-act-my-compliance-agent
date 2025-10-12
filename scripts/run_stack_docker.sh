@@ -60,6 +60,8 @@ start_vllm() {
     --gpus all \
     -p "$VLLM_PORT:8000" \
     -e HF_HOME="$HF_HOME_DIR" \
+    -e HF_TOKEN="${HF_TOKEN:-}" \
+    -e HUGGINGFACE_HUB_TOKEN="${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN:-}}" \
     -v "$HF_HOME_DIR":"/root/.cache/huggingface" \
     "$IMAGE" \
     --host "$HOST_IP" \
