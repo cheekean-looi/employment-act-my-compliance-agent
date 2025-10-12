@@ -4,16 +4,24 @@
 
 set -e
 
+# Paths
+PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+API_MODULE="src.server.api:app"
+
+# Load .env if present (export vars) before reading defaults
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$PROJECT_ROOT/.env"
+  set +a
+fi
+
 # Configuration from environment or defaults
 HOST=${API_HOST:-"0.0.0.0"}
 PORT=${API_PORT:-"8000"}
 WORKERS=${API_WORKERS:-"1"}
 LOG_LEVEL=${LOG_LEVEL:-"info"}
 RELOAD=${API_RELOAD:-"false"}
-
-# Paths
-PROJECT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-API_MODULE="src.server.api:app"
 
 echo "🚀 Starting FastAPI server for Employment Act Malaysia agent"
 echo "Host: $HOST:$PORT"
@@ -43,7 +51,8 @@ for path_var in "${REQUIRED_PATHS[@]}"; do
 done
 
 # Check vLLM connectivity
-VLLM_URL=${VLLM_BASE_URL:-"http://localhost:8000"}
+# Prefer explicit base URL; otherwise derive from port
+VLLM_URL=${VLLM_BASE_URL:-"http://localhost:${VLLM_PORT:-8000}"}
 echo "🔗 Checking vLLM connectivity at $VLLM_URL..."
 
 if curl -s -f "$VLLM_URL/health" > /dev/null 2>&1; then

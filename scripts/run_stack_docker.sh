@@ -32,6 +32,7 @@ MODEL=${MODEL_NAME:-"meta-llama/Llama-3.1-8B-Instruct"}
 GPU_UTIL=${GPU_MEMORY_UTIL:-0.85}
 MAX_LEN=${MAX_MODEL_LEN:-2048}
 HOST_IP=${VLLM_HOST:-"0.0.0.0"}
+WAIT_SECS=${VLLM_WAIT_SECS:-600}
 
 # Ensure VLLM_BASE_URL is aligned to the chosen port
 export VLLM_BASE_URL=${VLLM_BASE_URL:-"http://localhost:${VLLM_PORT}"}
@@ -79,12 +80,19 @@ health_vllm() {
 }
 
 wait_vllm() {
-  echo -n "⏳ Waiting for vLLM on :$VLLM_PORT"
-  for _ in {1..60}; do
+  echo -n "⏳ Waiting for vLLM on :$VLLM_PORT (up to ${WAIT_SECS}s)"
+  local end=$((SECONDS + WAIT_SECS))
+  while (( SECONDS < end )); do
+    # If container died, show logs and fail fast
+    if ! docker ps --format '{{.Names}}' | grep -q "^${VLLM_NAME}$"; then
+      echo; echo "❌ vLLM container exited early. Recent logs:"; docker logs --tail 200 "$VLLM_NAME" || true
+      return 1
+    fi
     if health_vllm; then echo " — ready"; return 0; fi
     echo -n "."; sleep 2
   done
-  echo; echo "❌ vLLM did not become healthy in time"; return 1
+  echo; echo "❌ vLLM did not become healthy in ${WAIT_SECS}s. It may still be downloading the model; view logs with './scripts/run_stack_docker.sh logs' or increase wait via VLLM_WAIT_SECS."
+  return 1
 }
 
 start_api() {
