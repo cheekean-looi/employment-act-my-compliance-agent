@@ -13,10 +13,13 @@ cd "$PROJECT_ROOT"
 
 # Load .env if present
 if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  # Export variables from .env but avoid nounset errors on expansion
+  set +u
   set -a
   # shellcheck disable=SC1090
   source "$PROJECT_ROOT/.env"
   set +a
+  set -u
 fi
 
 # Defaults (overridable via .env or inline)
@@ -29,6 +32,9 @@ MODEL=${MODEL_NAME:-"meta-llama/Llama-3.1-8B-Instruct"}
 GPU_UTIL=${GPU_MEMORY_UTIL:-0.85}
 MAX_LEN=${MAX_MODEL_LEN:-2048}
 HOST_IP=${VLLM_HOST:-"0.0.0.0"}
+
+# Ensure VLLM_BASE_URL is aligned to the chosen port
+export VLLM_BASE_URL=${VLLM_BASE_URL:-"http://localhost:${VLLM_PORT}"}
 
 API_LOG="$PROJECT_ROOT/api.log"
 
@@ -124,4 +130,3 @@ case "$cmd" in
     exit 1
     ;;
 esac
-
