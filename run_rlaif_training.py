@@ -205,6 +205,52 @@ class RLAIFTrainingPipeline:
         
         if not checkpoint_file.exists():
             return False
+
+    # ----------------------
+    # Alignment validation
+    # ----------------------
+    def _read_adapter_base(self, model_dir: Path) -> Optional[str]:
+        """Return the base model name recorded in a PEFT adapter directory.
+
+        Looks for adapter_config.json and reads base_model_name_or_path/base_model_name.
+        Returns None if not found.
+        """
+        try:
+            cfg = model_dir / "adapter_config.json"
+            if cfg.exists():
+                with open(cfg, 'r') as f:
+                    data = json.load(f)
+                return data.get("base_model_name_or_path") or data.get("base_model_name")
+        except Exception:
+            pass
+        return None
+
+    def _validate_model_alignment(self, dpo_model: Optional[Path] = None):
+        """Validate base-model alignment across SFT → DPO → PPO.
+
+        - SFT vs --model-name
+        - (optional) DPO vs --ppo-model
+        Raises PipelineError with a helpful message if misaligned.
+        """
+        # SFT alignment
+        if self.config.sft_model and self.config.sft_model.exists():
+            sft_base = self._read_adapter_base(self.config.sft_model)
+            if sft_base and sft_base != self.config.model_name:
+                raise PipelineError(
+                    "Base model mismatch: SFT adapter was trained on '"
+                    f"{sft_base}', but --model-name is '{self.config.model_name}'. "
+                    "Set --model-name to the SFT base or regenerate the SFT adapter."
+                )
+
+        # DPO alignment (if provided)
+        if dpo_model and dpo_model.exists():
+            dpo_base = self._read_adapter_base(dpo_model)
+            if dpo_base and dpo_base != self.config.ppo_model:
+                raise PipelineError(
+                    "Base model mismatch: DPO adapter was trained on '"
+                    f"{dpo_base}', but --ppo-model is '{self.config.ppo_model}'. "
+                    "Set --ppo-model to the DPO base, or regenerate DPO with the desired base."
+                )
         
         try:
             with open(checkpoint_file, 'r') as f:
@@ -239,6 +285,13 @@ class RLAIFTrainingPipeline:
             self.logger.info("💡 Consider using SmolLM-135M for memory efficiency")
         
         self.logger.info("✅ Prerequisites validated")
+        # Validate model alignment for early failure (SFT vs model_name)
+        try:
+            self._validate_model_alignment()
+        except PipelineError as e:
+            # Re-raise after logging for a clear early exit
+            self.logger.error(str(e))
+            raise
         # Log accelerator info into a run-level metadata file for reproducibility
         try:
             info = getattr(self, 'accelerator', None) or get_accelerator()
@@ -360,8 +413,15 @@ class RLAIFTrainingPipeline:
         """Run PPO with proper value-head initialization."""
         stage_name = "PPO"
         self.logger.info(f"\n⚡ Step 3: Running PPO with {self.config.ppo_prompts} prompts...")
-        
+
         ppo_output = self.output_dir / "lora_ppo"
+
+        # Validate model alignment between DPO adapter and PPO base before launching PPO
+        try:
+            self._validate_model_alignment(dpo_model)
+        except PipelineError as e:
+            self.logger.error(str(e))
+            raise
         
         cmd = [
             "python", "src/training/tiny_ppo_loop.py",

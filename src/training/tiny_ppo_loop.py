@@ -177,6 +177,23 @@ class FixedTinyPPOLoop:
         # FIXED: Proper value-head initialization
         if self.dpo_checkpoint_path and Path(self.dpo_checkpoint_path).exists():
             print(f"📚 Loading DPO checkpoint for PPO: {self.dpo_checkpoint_path}")
+            # Align base model to adapter base if available in adapter_config.json
+            try:
+                adapter_cfg_path = Path(self.dpo_checkpoint_path) / "adapter_config.json"
+                if adapter_cfg_path.exists():
+                    with open(adapter_cfg_path) as f:
+                        adapter_cfg = json.load(f)
+                    hinted_base = adapter_cfg.get("base_model_name_or_path") or adapter_cfg.get("base_model_name")
+                    if hinted_base and hinted_base != self.base_model_name:
+                        print(f"🔄 Aligning PPO base model with DPO adapter base: {hinted_base}")
+                        self.base_model_name = hinted_base
+                        # Reload tokenizer to match new base
+                        self.tokenizer = AutoTokenizer.from_pretrained(self.base_model_name)
+                        if self.tokenizer.pad_token is None:
+                            self.tokenizer.pad_token = self.tokenizer.eos_token
+                        self.tokenizer.padding_side = "left"
+            except Exception as e:
+                print(f"⚠️ Could not read adapter base from adapter_config.json: {e}")
             try:
                 # Method A: Load base model first, then add value head, then load LoRA
                 print("   Method A: Base → Value Head → LoRA adapter")
@@ -489,9 +506,8 @@ class FixedTinyPPOLoop:
         print(f"🔄 PPO epochs: {ppo_epochs}")
         print(f"🎛️ Learning rate: {learning_rate}")
         
-        # PPO Configuration with memory optimization
+        # PPO Configuration with memory optimization (drop unsupported args like model_name)
         ppo_config = PPOConfig(
-            model_name=self.base_model_name,
             batch_size=batch_size,
             mini_batch_size=mini_batch_size,
             ppo_epochs=ppo_epochs,
