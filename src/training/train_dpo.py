@@ -713,6 +713,11 @@ class FixedEmploymentActDPOTrainer:
                 trainer_state = json.load(f)
             
             log_history = trainer_state.get('log_history', [])
+
+            # Guard against empty or mismatched histories
+            if not log_history:
+                print("⚠️ No log history recorded; skipping curves plot")
+                return
             
             # Load citation metrics history if available
             citation_metrics_file = output_dir / "dpo_metrics.json"

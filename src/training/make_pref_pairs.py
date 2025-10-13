@@ -334,14 +334,23 @@ class FixedPreferencePairGenerator:
             prompt_len = input_ids.shape[1]
             response = self.sft_tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True).strip()
 
-            # Post-process: ensure canonical citation appears in chosen responses
+            # Post-process: ensure canonical citation appears prominently in chosen responses
             if is_chosen:
                 try:
                     section_id = chunk.get('section_id', '')
                     predicted = self.validator.extract_section_ids(response)
                     if section_id and (not predicted or section_id not in predicted):
-                        # Append concise canonical citation line to guarantee grounding signal
-                        response = response.rstrip() + f"\nCitation: {section_id}"
+                        # Inject canonical citation into the first sentence/paragraph for stronger supervision
+                        first_break = min(
+                            [i for i in [response.find('. '), response.find('\n')] if i != -1] or [min(200, len(response))]
+                        )
+                        insertion_point = first_break + (0 if first_break >= len(response) else 1)
+                        # Compose injected snippet
+                        injected = f" ({section_id})"
+                        if insertion_point <= 0 or insertion_point > len(response):
+                            response = response.strip() + injected
+                        else:
+                            response = response[:insertion_point] + injected + response[insertion_point:]
                 except Exception:
                     pass
             return response

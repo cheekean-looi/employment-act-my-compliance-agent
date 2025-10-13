@@ -64,18 +64,19 @@ class RLAIFConfig:
     output_dir: Path = field(default_factory=lambda: Path("outputs"))
     
     # Preference pairs config
-    pairs_size: int = 60
+    pairs_size: int = 120
     pairs_seed: int = 42
     
     # DPO config
-    dpo_epochs: int = 1
+    dpo_epochs: int = 2
     dpo_batch_size: int = 2
     dpo_learning_rate: float = 5e-5
-    dpo_beta: float = 0.1
+    dpo_beta: float = 0.05
     
     # PPO config
     ppo_prompts: int = 16
-    ppo_model: str = "HuggingFaceTB/SmolLM-135M-Instruct"
+    ppo_model: Optional[str] = None  # If None, align to model_name
+    ppo_use_4bit: bool = False
     ppo_batch_size: int = 32
     ppo_mini_batch_size: int = 4
     
@@ -143,6 +144,25 @@ class RLAIFTrainingPipeline:
         self.state = PipelineState()
         self.setup_logging()
         self.setup_output_dirs()
+        # Normalize training config to recommended defaults when overly small
+        # (applies when ephemeral configs inject conservative values)
+        try:
+            if self.config.dpo_epochs < 2:
+                self.logger.info("🔧 Bumping DPO epochs to 2 for stronger signal")
+                self.config.dpo_epochs = 2
+            # Keep beta within [0.05, 0.1]
+            if self.config.dpo_beta is not None:
+                if self.config.dpo_beta > 0.1:
+                    self.logger.info("🔧 Clamping DPO beta to 0.1")
+                    self.config.dpo_beta = 0.1
+                elif self.config.dpo_beta < 0.05:
+                    self.logger.info("🔧 Raising DPO beta to 0.05")
+                    self.config.dpo_beta = 0.05
+            if self.config.pairs_size < 100:
+                self.logger.info("🔧 Increasing preference pair size to 120 for stability")
+                self.config.pairs_size = 120
+        except Exception:
+            pass
         
         # Create timestamped output directory
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -277,11 +297,14 @@ class RLAIFTrainingPipeline:
             self.logger.info("📝 Will use heuristic preference pair generation")
             self.config.sft_model = None
         
+        # Resolve PPO base: default to model_name if not set
+        if not self.config.ppo_model:
+            self.config.ppo_model = self.config.model_name
         # Memory warnings for large models
-        if "7B" in self.config.ppo_model or "8B" in self.config.ppo_model:
+        if self.config.ppo_model and ("7B" in self.config.ppo_model or "8B" in self.config.ppo_model):
             self.logger.warning(f"⚠️ Large PPO model ({self.config.ppo_model}) may cause OOM")
             self.logger.info("💡 Consider using SmolLM-135M for memory efficiency")
-        
+
         self.logger.info("✅ Prerequisites validated")
         # Validate model alignment for early failure (SFT vs model_name)
         try:
@@ -431,6 +454,8 @@ class RLAIFTrainingPipeline:
             "--base-model", self.config.ppo_model,
             "--num-prompts", str(self.config.ppo_prompts)
         ]
+        if getattr(self.config, 'ppo_use_4bit', False):
+            cmd.append("--use-4bit")
         
         self.run_subprocess_with_monitoring(cmd, stage_name)
         
@@ -578,7 +603,7 @@ Examples:
     # Development mode
     dev_parser = subparsers.add_parser('dev', help='Development mode (small datasets)')
     add_common_args(dev_parser)
-    dev_parser.set_defaults(pairs_size=20, ppo_prompts=8, dpo_epochs=1)
+    dev_parser.set_defaults(pairs_size=120, ppo_prompts=8, dpo_epochs=2)
     
     return parser
 
@@ -599,8 +624,8 @@ def add_common_args(parser, include_chunks=True, include_output=True):
     parser.add_argument('--dpo-epochs', type=int, default=1, help='DPO training epochs')
     parser.add_argument('--dpo-beta', type=float, default=0.1, help='DPO beta parameter')
     parser.add_argument('--ppo-prompts', type=int, default=16, help='PPO prompts count')
-    parser.add_argument('--ppo-model', default="HuggingFaceTB/SmolLM-135M-Instruct", 
-                       help='PPO base model')
+    parser.add_argument('--ppo-model', default=None, help='PPO base model (defaults to --model-name)')
+    parser.add_argument('--ppo-use-4bit', action='store_true', help='Enable 4-bit quantization for PPO policy/ref models')
     
     # Model configuration
     parser.add_argument('--model-name', default="meta-llama/Llama-3.1-8B-Instruct",
