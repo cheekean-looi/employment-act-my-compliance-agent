@@ -515,7 +515,7 @@ Examples:
     resume_parser.add_argument('--from', dest='resume_from', choices=['pairs', 'dpo', 'ppo'], 
                               required=True, help='Resume from this stage')
     resume_parser.add_argument('--output-dir', required=True, help='Previous output directory to resume from')
-    add_common_args(resume_parser, include_chunks=False)
+    add_common_args(resume_parser, include_chunks=False, include_output=False)
     
     # Development mode
     dev_parser = subparsers.add_parser('dev', help='Development mode (small datasets)')
@@ -525,7 +525,7 @@ Examples:
     return parser
 
 
-def add_common_args(parser, include_chunks=True):
+def add_common_args(parser, include_chunks=True, include_output=True):
     """Add common arguments to parser."""
     
     # Configuration
@@ -549,7 +549,8 @@ def add_common_args(parser, include_chunks=True):
                        help='Base model name')
     
     # Output configuration
-    parser.add_argument('--output-dir', default="outputs", help='Output directory')
+    if include_output:
+        parser.add_argument('--output-dir', default="outputs", help='Output directory')
     parser.add_argument('--experiment-name', help='Experiment name for organization')
     
     # Logging
