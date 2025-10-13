@@ -607,19 +607,32 @@ class FixedEmploymentActDPOTrainer:
         
         try:
             formatted_prompt = self._format_prompt(prompt)
-            inputs = self.tokenizer.encode(formatted_prompt, return_tensors="pt").to(self.device)
+            enc = self.tokenizer(
+                formatted_prompt,
+                return_tensors="pt",
+                padding=False,
+                add_special_tokens=True
+            )
+            input_ids = enc["input_ids"].to(self.device)
+            attention_mask = enc.get("attention_mask")
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(self.device)
             
             with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs,
+                gen_kwargs = dict(
+                    input_ids=input_ids,
                     max_new_tokens=max_new_tokens,
                     temperature=0.1,
                     do_sample=True,
                     pad_token_id=self.tokenizer.eos_token_id,
                     eos_token_id=self.tokenizer.eos_token_id
                 )
+                if attention_mask is not None:
+                    gen_kwargs["attention_mask"] = attention_mask
+                outputs = self.model.generate(**gen_kwargs)
             
-            response = self.tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
+            prompt_len = input_ids.shape[1]
+            response = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
             return response.strip()
         
         finally:
@@ -629,12 +642,18 @@ class FixedEmploymentActDPOTrainer:
     def _generate_evaluation_report(self, results: Dict[str, Any], output_dir: Path):
         """Generate comprehensive evaluation report."""
         
+        # Safely format optional numeric fields
+        train_loss = results.get('train_loss')
+        eval_loss = results.get('eval_loss')
+        train_loss_str = f"{train_loss:.4f}" if isinstance(train_loss, (int, float)) else "N/A"
+        eval_loss_str = f"{eval_loss:.4f}" if isinstance(eval_loss, (int, float)) else "N/A"
+
         report = f"""
 # Fixed DPO Training Evaluation Report
 
 ## Training Results
-- **Final Train Loss**: {results.get('train_loss', 'N/A'):.4f}
-- **Final Eval Loss**: {results.get('eval_loss', 'N/A'):.4f}
+- **Final Train Loss**: {train_loss_str}
+- **Final Eval Loss**: {eval_loss_str}
 - **Tokenizer Padding**: Right (training), Left (inference)
 
 ## Enhanced Metrics
