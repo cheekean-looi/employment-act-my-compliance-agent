@@ -115,13 +115,31 @@ class TRLSFTTrainer_Production:
             quantization_config = None
         
         # Load model
+        # Pick attention implementation safely
+        attn_impl = None
+        attn_env = os.getenv("ATTN_IMPL")
+        fa2_env = os.getenv("HF_USE_FLASH_ATTENTION_2", "0") != "0"
+        want_fa2 = fa2_env or (attn_env == "flash_attention_2")
+        if want_fa2:
+            try:
+                import flash_attn  # noqa: F401
+                attn_impl = "flash_attention_2"
+            except Exception:
+                print("⚠️ FlashAttention2 requested but not available. Falling back to SDPA.")
+                attn_impl = "sdpa" if torch.cuda.is_available() else "eager"
+        else:
+            if attn_env in {"sdpa", "eager"}:
+                attn_impl = attn_env
+            else:
+                attn_impl = "sdpa" if torch.cuda.is_available() else "eager"
+
         model = AutoModelForCausalLM.from_pretrained(
             self.config.model_name,
             quantization_config=quantization_config,
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
             torch_dtype=torch.bfloat16 if self.config.bf16 else torch.float16,
-            attn_implementation="flash_attention_2" if torch.cuda.is_available() else "eager"
+            attn_implementation=attn_impl
         )
         # Move to MPS explicitly if selected
         if self.device.type == "mps":

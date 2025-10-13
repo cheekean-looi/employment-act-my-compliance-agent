@@ -83,7 +83,7 @@ class FixedEmploymentActDPOTrainer:
         print(f"📱 Device: {self.device}")
         print(f"🤖 Model: {model_name}")
         print(f"⚡ 4-bit quantization: {use_4bit}")
-        print(f"🔥 Flash attention: {use_flash_attention}")
+        print(f"🔥 Flash attention (requested): {use_flash_attention}")
         if sft_model_path:
             print(f"📚 SFT checkpoint: {sft_model_path}")
         
@@ -147,9 +147,27 @@ class FixedEmploymentActDPOTrainer:
         
         if bnb_config:
             model_kwargs["quantization_config"] = bnb_config
-        
-        if self.use_flash_attention:
-            model_kwargs["attn_implementation"] = "flash_attention_2"
+
+        # Select attention implementation safely (prefer SDPA unless FA2 is explicitly available)
+        attn_impl = None
+        attn_env = os.getenv("ATTN_IMPL")
+        fa2_env = os.getenv("HF_USE_FLASH_ATTENTION_2", "0") != "0"
+        want_fa2 = self.use_flash_attention or fa2_env or (attn_env == "flash_attention_2")
+        if want_fa2:
+            try:
+                import flash_attn  # noqa: F401
+                attn_impl = "flash_attention_2"
+            except Exception:
+                print("⚠️ FlashAttention2 requested but not available. Falling back to SDPA.")
+                attn_impl = "sdpa" if torch.cuda.is_available() else "eager"
+        else:
+            if attn_env in {"sdpa", "eager"}:
+                attn_impl = attn_env
+            else:
+                attn_impl = "sdpa" if torch.cuda.is_available() else "eager"
+
+        model_kwargs["attn_implementation"] = attn_impl
+        print(f"🧠 Attention implementation: {attn_impl}")
         
         base_model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
