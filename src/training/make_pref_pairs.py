@@ -293,19 +293,33 @@ class FixedPreferencePairGenerator:
             )
             
             # Generate response
-            inputs = self.sft_tokenizer.encode(formatted_prompt, return_tensors="pt").to(self.device)
+            enc = self.sft_tokenizer(
+                formatted_prompt,
+                return_tensors="pt",
+                padding=False,
+                add_special_tokens=True
+            )
+            input_ids = enc["input_ids"].to(self.device)
+            attention_mask = enc.get("attention_mask")
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(self.device)
             
             with torch.no_grad():
-                outputs = self.sft_model.generate(
-                    inputs,
+                generate_kwargs = dict(
+                    input_ids=input_ids,
                     max_new_tokens=200,
                     temperature=0.7 if is_chosen else 0.9,  # More varied for rejected
                     do_sample=True,
                     pad_token_id=self.sft_tokenizer.eos_token_id,
                     eos_token_id=self.sft_tokenizer.eos_token_id
                 )
+                if attention_mask is not None:
+                    generate_kwargs["attention_mask"] = attention_mask
+                outputs = self.sft_model.generate(**generate_kwargs)
             
-            response = self.sft_tokenizer.decode(outputs[0][len(inputs[0]):], skip_special_tokens=True)
+            # Slice generated tokens after the prompt length
+            prompt_len = input_ids.shape[1]
+            response = self.sft_tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
             return response.strip()
             
         except Exception as e:

@@ -31,6 +31,7 @@ from transformers import (
     AutoTokenizer, AutoModelForCausalLM, 
     BitsAndBytesConfig, TrainingArguments
 )
+from transformers.trainer_callback import TrainerCallback
 from trl import DPOTrainer, DPOConfig
 from peft import LoraConfig, get_peft_model, TaskType, PeftModel, prepare_model_for_kbit_training
 import argparse
@@ -840,7 +841,7 @@ class EnhancedEmploymentActJudge:
         }
 
 
-class FixedDPOMetricsCallback:
+class FixedDPOMetricsCallback(TrainerCallback):
     """Fixed callback for tracking DPO metrics with persistent eval subset."""
     
     def __init__(self, trainer_obj, eval_data: List[Dict], output_dir: Path):
@@ -855,7 +856,7 @@ class FixedDPOMetricsCallback:
         self.output_dir = output_dir
         self.metrics_history = []
     
-    def on_evaluate(self, args, state, control, model=None, **kwargs):
+    def on_evaluate(self, args, state, control, metrics=None, **kwargs):
         """Called during evaluation to compute custom metrics."""
         try:
             # Compute enhanced metrics on fixed subset
@@ -915,6 +916,10 @@ class FixedDPOMetricsCallback:
                 
         except Exception as e:
             logger.warning(f"Custom metrics computation failed: {e}")
+
+    # Explicit no-op to ensure compatibility across transformers versions
+    def on_train_begin(self, args, state, control, **kwargs):
+        return control
 
 
 def main():
