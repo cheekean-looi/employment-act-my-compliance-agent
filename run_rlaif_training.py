@@ -201,9 +201,18 @@ class RLAIFTrainingPipeline:
     
     def load_checkpoint(self) -> bool:
         """Load pipeline state from checkpoint."""
-        checkpoint_file = self.output_dir / "checkpoint.json"
-        
-        if not checkpoint_file.exists():
+        ckpt_path = self.output_dir / "checkpoint.json"
+        if not ckpt_path.exists():
+            return False
+        try:
+            with open(ckpt_path, 'r') as f:
+                data = json.load(f)
+            # Reconstruct state object
+            self.state = PipelineState(**data)
+            self.logger.info(f"📂 Checkpoint loaded: {ckpt_path}")
+            return True
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to load checkpoint: {e}")
             return False
 
     # ----------------------
@@ -252,18 +261,7 @@ class RLAIFTrainingPipeline:
                     "Set --ppo-model to the DPO base, or regenerate DPO with the desired base."
                 )
         
-        try:
-            with open(checkpoint_file, 'r') as f:
-                data = json.load(f)
-            
-            # Reconstruct state object
-            self.state = PipelineState(**data)
-            self.logger.info(f"📂 Checkpoint loaded: {checkpoint_file}")
-            return True
-            
-        except Exception as e:
-            self.logger.warning(f"⚠️ Failed to load checkpoint: {e}")
-            return False
+        
     
     def validate_prerequisites(self):
         """Validate all inputs and dependencies before starting."""
