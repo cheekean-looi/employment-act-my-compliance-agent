@@ -732,6 +732,10 @@ class FixedEmploymentActDPOTrainer:
             win_rates = []
             citation_em_values = []
             citation_iou_values = []
+
+            def _align(x, y):
+                m = min(len(x), len(y))
+                return x[:m], y[:m]
             
             for log in log_history:
                 if 'train_loss' in log:
@@ -755,7 +759,9 @@ class FixedEmploymentActDPOTrainer:
             
             # Training loss
             if train_losses:
-                axes[0, 0].plot(train_steps, train_losses, 'b-', label='DPO Training Loss')
+                xs, ys = _align(train_steps, train_losses)
+                if xs and ys:
+                    axes[0, 0].plot(xs, ys, 'b-', label='DPO Training Loss')
                 axes[0, 0].set_xlabel('Steps')
                 axes[0, 0].set_ylabel('Loss')
                 axes[0, 0].set_title('Training Loss')
@@ -764,7 +770,9 @@ class FixedEmploymentActDPOTrainer:
             
             # Evaluation loss
             if eval_losses:
-                axes[0, 1].plot(eval_steps, eval_losses, 'r-', label='DPO Evaluation Loss')
+                xs, ys = _align(eval_steps, eval_losses)
+                if xs and ys:
+                    axes[0, 1].plot(xs, ys, 'r-', label='DPO Evaluation Loss')
                 axes[0, 1].set_xlabel('Steps')
                 axes[0, 1].set_ylabel('Loss')
                 axes[0, 1].set_title('Evaluation Loss')
@@ -772,8 +780,11 @@ class FixedEmploymentActDPOTrainer:
                 axes[0, 1].grid(True)
             
             # Win rate
-            if win_rates:
-                axes[0, 2].plot(eval_steps[:len(win_rates)], win_rates, 'g-', label='Enhanced Win-Rate')
+            if win_rates and eval_steps:
+                xs = eval_steps[:len(win_rates)]
+                xs, ys = _align(xs, win_rates)
+                if xs and ys:
+                    axes[0, 2].plot(xs, ys, 'g-', label='Enhanced Win-Rate')
                 axes[0, 2].set_xlabel('Steps')
                 axes[0, 2].set_ylabel('Win Rate')
                 axes[0, 2].set_title('Enhanced Pairwise Win-Rate vs Steps')
@@ -781,9 +792,11 @@ class FixedEmploymentActDPOTrainer:
                 axes[0, 2].grid(True)
             
             # Citation EM
-            if citation_em_values:
+            if citation_em_values and eval_steps:
                 steps_for_citations = eval_steps[:len(citation_em_values)]
-                axes[1, 0].plot(steps_for_citations, citation_em_values, 'm-', label='Citation EM')
+                xs, ys = _align(steps_for_citations, citation_em_values)
+                if xs and ys:
+                    axes[1, 0].plot(xs, ys, 'm-', label='Citation EM')
                 axes[1, 0].set_xlabel('Steps')
                 axes[1, 0].set_ylabel('Citation EM')
                 axes[1, 0].set_title('Citation Exact Match vs Steps')
@@ -791,9 +804,11 @@ class FixedEmploymentActDPOTrainer:
                 axes[1, 0].grid(True)
             
             # Citation IoU
-            if citation_iou_values:
+            if citation_iou_values and eval_steps:
                 steps_for_citations = eval_steps[:len(citation_iou_values)]
-                axes[1, 1].plot(steps_for_citations, citation_iou_values, 'c-', label='Citation IoU')
+                xs, ys = _align(steps_for_citations, citation_iou_values)
+                if xs and ys:
+                    axes[1, 1].plot(xs, ys, 'c-', label='Citation IoU')
                 axes[1, 1].set_xlabel('Steps')
                 axes[1, 1].set_ylabel('Citation IoU')
                 axes[1, 1].set_title('Citation IoU vs Steps')
@@ -801,11 +816,15 @@ class FixedEmploymentActDPOTrainer:
                 axes[1, 1].grid(True)
             
             # Combined metrics
-            if win_rates and citation_em_values:
-                axes[1, 2].plot(eval_steps[:len(win_rates)], win_rates, 'g-', label='Win Rate', alpha=0.7)
+            if win_rates and eval_steps:
+                xs, ys = _align(eval_steps[:len(win_rates)], win_rates)
+                if xs and ys:
+                    axes[1, 2].plot(xs, ys, 'g-', label='Win Rate', alpha=0.7)
                 if citation_em_values:
                     steps_for_citations = eval_steps[:len(citation_em_values)]
-                    axes[1, 2].plot(steps_for_citations, citation_em_values, 'm-', label='Citation EM', alpha=0.7)
+                    xs2, ys2 = _align(steps_for_citations, citation_em_values)
+                    if xs2 and ys2:
+                        axes[1, 2].plot(xs2, ys2, 'm-', label='Citation EM', alpha=0.7)
                 axes[1, 2].set_xlabel('Steps')
                 axes[1, 2].set_ylabel('Score')
                 axes[1, 2].set_title('Combined Metrics')
@@ -966,6 +985,18 @@ def main():
     parser.add_argument('--no-flash-attention', action='store_true', help='Disable flash attention')
     
     args = parser.parse_args()
+
+    # Best-practice guards: strengthen learning signal and clamp beta
+    if args.epochs < 2:
+        print("🔧 Epochs < 2 detected; bumping to 2 for a stronger DPO signal")
+        args.epochs = 2
+    # Clamp beta to [0.05, 0.1]
+    if args.beta < 0.05:
+        print("🔧 Beta below 0.05; raising to 0.05")
+        args.beta = 0.05
+    elif args.beta > 0.1:
+        print("🔧 Beta above 0.1; clamping to 0.1")
+        args.beta = 0.1
     
     # Create output directory
     output_dir = Path(args.output_dir)
