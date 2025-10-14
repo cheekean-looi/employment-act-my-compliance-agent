@@ -106,6 +106,11 @@ class ProductionSFTGenerator:
         """Set all random seeds for reproducibility."""
         random.seed(seed)
         np.random.seed(seed)
+        try:
+            import os as _os
+            _os.environ['PYTHONHASHSEED'] = str(seed)
+        except Exception:
+            pass
         
     def _load_chunks(self, chunks_file: Path) -> List[Dict[str, Any]]:
         """Load and validate chunks from JSONL file."""

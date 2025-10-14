@@ -44,6 +44,7 @@ import bitsandbytes as bnb
 from trl import SFTTrainer
 from transformers.integrations import TensorBoardCallback
 from transformers import TrainerCallback, TrainerState, TrainerControl, EarlyStoppingCallback
+import transformers as _transformers
 
 try:
     from .schemas import TrainingConfig, EnvironmentInfo, EvaluationMetrics, CitationMetrics
@@ -54,11 +55,18 @@ except ImportError:
     from schemas import TrainingConfig, EnvironmentInfo, EvaluationMetrics, CitationMetrics
     from eval_utils import load_stable_eval_subset
 
-# Load environment variables from a .env file if present (repo root or CWD)
+    # Load environment variables from a .env file if present (repo root or CWD)
 try:
     from dotenv import load_dotenv
     # load from CWD; if running from repo root, this picks up .env there
     load_dotenv()
+except Exception:
+    pass
+
+# Advisory for HF cache deprecation
+try:
+    if os.environ.get("TRANSFORMERS_CACHE") and not os.environ.get("HF_HOME"):
+        print("ℹ️ Detected TRANSFORMERS_CACHE; prefer HF_HOME for newer transformers versions.")
 except Exception:
     pass
 
@@ -1167,6 +1175,7 @@ class ProductionQLoRATrainer:
                 "device": str(self.device),
                 "logging_backend": self.config.report_to,
                 "tensorboard_run_dir": tensorboard_run_dir,
+                "cli_args": sys.argv,
             },
             "environment": env_info_block,
             "results": {
@@ -1189,6 +1198,11 @@ class ProductionQLoRATrainer:
                 "train_results": "train_results.json",
                 "eval_results": "eval_results.json",
                 "tensorboard_logs": tensorboard_run_dir if tensorboard_run_dir else None,
+            },
+            "versions": {
+                "python": sys.version,
+                "torch": torch.__version__,
+                "transformers": getattr(_transformers, "__version__", None),
             }
         }
         
@@ -1196,6 +1210,20 @@ class ProductionQLoRATrainer:
             json.dump(metadata, f, indent=2)
         
         print(f"   Metadata saved to {output_dir / 'metadata.json'}")
+
+        # Also write accelerator.json with concise device info
+        try:
+            accel = {
+                "cuda_available": torch.cuda.is_available(),
+                "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
+                "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+                "bf16": self.config.bf16,
+                "fp16": self.config.fp16,
+            }
+            with open(output_dir / "accelerator.json", 'w') as f:
+                json.dump(accel, f, indent=2)
+        except Exception:
+            pass
 
 
 def main():

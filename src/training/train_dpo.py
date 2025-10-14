@@ -42,6 +42,7 @@ import re
 import os
 import logging
 import sys
+import transformers as _transformers
 
 # Add the training directory to the path to import citation_utils
 sys.path.append(str(Path(__file__).parent))
@@ -100,6 +101,13 @@ class FixedEmploymentActDPOTrainer:
         
         # Initialize canonical citation validator
         self.validator = CanonicalCitationValidator()
+        
+        # HF cache advisory
+        try:
+            if os.environ.get("TRANSFORMERS_CACHE") and not os.environ.get("HF_HOME"):
+                print("ℹ️ Detected TRANSFORMERS_CACHE; prefer HF_HOME for newer transformers versions.")
+        except Exception:
+            pass
         
         # Load model with QLoRA configuration
         self._load_model_with_qlora(lora_rank, lora_alpha, lora_dropout)
@@ -436,12 +444,15 @@ class FixedEmploymentActDPOTrainer:
                 "use_flash_attention": self.use_flash_attention,
                 "training_args": training_args.to_dict(),
                 "tokenizer_padding_side": self.tokenizer.padding_side,
+                "cli_args": sys.argv,
             },
             "reproducibility": {
                 "seed": self.seed,
                 "torch_version": torch.__version__,
                 "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
                 "device": str(self.device),
+                "python": sys.version,
+                "transformers": getattr(_transformers, "__version__", None),
             },
             "dataset_info": {
                 "train_size": len(train_data),
@@ -469,6 +480,19 @@ class FixedEmploymentActDPOTrainer:
         
         with open(output_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
+        
+        # accelerator.json
+        try:
+            accel = {
+                "cuda_available": torch.cuda.is_available(),
+                "cuda_version": torch.version.cuda if torch.cuda.is_available() else None,
+                "gpu_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+                "device": str(self.device)
+            }
+            with open(output_dir / "accelerator.json", 'w') as f:
+                json.dump(accel, f, indent=2)
+        except Exception:
+            pass
     
     def evaluate_dpo_model(self, trainer, eval_data: List[Dict], output_dir: Path):
         """Comprehensive evaluation of the DPO trained model."""

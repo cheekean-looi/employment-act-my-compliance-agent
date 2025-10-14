@@ -813,6 +813,11 @@ class FixedTinyPPOLoop:
                 "use_4bit": self.use_4bit,
                 "seed": self.seed
             },
+            "versions": {
+                "python": sys.version,
+                "torch": torch.__version__,
+                "transformers": getattr(_transformers, "__version__", None)
+            },
             "reward_criteria": self.reward_criteria,
             "fixes_applied": {
                 "proper_value_head_init": True,
