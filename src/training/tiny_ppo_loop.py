@@ -1033,13 +1033,21 @@ def main():
     
     args = parser.parse_args()
     
-    # Validate model choice for memory
+    # Validate model choice for memory (non-interactive safe fallback)
     if ("7B" in args.base_model or "8B" in args.base_model):
         print("⚠️ WARNING: Large model detected. This may cause OOM errors.")
         print("💡 Consider using --base-model meta-llama/Llama-3.2-1B-Instruct for memory efficiency")
-        response = input("Continue anyway? (y/N): ")
-        if response.lower() != 'y':
-            print("Switching to Llama-3.2-1B-Instruct for safety...")
+        try:
+            interactive = sys.stdin and sys.stdin.isatty()
+        except Exception:
+            interactive = False
+        if interactive:
+            response = input("Continue anyway? (y/N): ")
+            if response.lower() != 'y':
+                print("Switching to Llama-3.2-1B-Instruct for safety...")
+                args.base_model = "meta-llama/Llama-3.2-1B-Instruct"
+        else:
+            print("ℹ️ Non-interactive session detected; auto-switching to Llama-3.2-1B-Instruct for PPO.")
             args.base_model = "meta-llama/Llama-3.2-1B-Instruct"
     
     # Create output directory
