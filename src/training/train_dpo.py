@@ -537,6 +537,7 @@ class FixedEmploymentActDPOTrainer:
         citation_iou_sum = 0
         safety_violations = 0
         vagueness_violations = 0
+        samples: List[Dict[str, Any]] = []
         
         for i, example in enumerate(sample_data):
             try:
@@ -597,6 +598,32 @@ class FixedEmploymentActDPOTrainer:
                 json.dump(metrics["eval_subset_integrity"], f, indent=2)
             print(f"🔍 Eval integrity report saved: {integrity_file}")
         
+        # Save sample artifacts for spot checks
+        try:
+            samples_file = output_dir / "dpo_eval_samples.jsonl"
+            with open(samples_file, 'w', encoding='utf-8') as f:
+                for example in sample_data[:20]:
+                    try:
+                        model_response = self._generate_response(example['prompt'])
+                        predicted = self.validator.extract_section_ids(model_response)
+                        valid_pred = self.validator.validate_section_ids(predicted)
+                        em, iou = self.validator.compute_citation_metrics(predicted, {example.get('source_section', '')})
+                        f.write(json.dumps({
+                            "pair_id": example.get('pair_id'),
+                            "prompt": example.get('prompt'),
+                            "source_section": example.get('source_section'),
+                            "response": model_response,
+                            "predicted_sections": list(predicted),
+                            "valid_predicted_sections": list(valid_pred),
+                            "citation_em": em,
+                            "citation_iou": iou
+                        }, ensure_ascii=False) + "\n")
+                    except Exception:
+                        continue
+            print(f"📝 DPO eval samples saved: {samples_file}")
+        except Exception:
+            print("⚠️ Could not save DPO eval samples")
+
         return metrics
     
     def _generate_response(self, prompt: str, max_new_tokens: int = 150) -> str:
@@ -693,6 +720,16 @@ class FixedEmploymentActDPOTrainer:
         else:
             report += "- ✅ Good safety performance: Low violation rate\n"
         
+        # Add eval subset integrity info if present
+        integrity = results.get('eval_subset_integrity')
+        if integrity:
+            report += "\n## Eval Subset Integrity\n"
+            report += f"- **Expected Pairs**: {integrity.get('expected_pairs')}\n"
+            report += f"- **Found Pairs**: {integrity.get('found_pairs')}\n"
+            miss = integrity.get('missing_pairs', 0)
+            report += f"- **Missing Pairs**: {miss}\n"
+            report += f"- **Integrity OK**: {integrity.get('integrity_ok')}\n"
+
         report += f"\n*Report generated: {datetime.now().isoformat()}*\n"
         
         with open(output_dir / "evaluation_report.md", "w") as f:
@@ -836,6 +873,41 @@ class FixedEmploymentActDPOTrainer:
             plt.close()
             
             print(f"📈 Enhanced training curves saved: {output_dir / 'dpo_training_curves.png'}")
+
+            # Export CSVs for downstream analysis
+            try:
+                import csv
+                # Train loss CSV
+                with open(output_dir / "dpo_train_loss.csv", 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["step", "train_loss"])
+                    for s, l in zip(train_steps, train_losses):
+                        writer.writerow([s, l])
+                # Eval loss CSV
+                with open(output_dir / "dpo_eval_loss.csv", 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["step", "eval_loss"])
+                    for s, l in zip(eval_steps, eval_losses):
+                        writer.writerow([s, l])
+                # Eval metrics CSV
+                with open(output_dir / "dpo_eval_metrics.csv", 'w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["step", "win_rate", "citation_em", "citation_iou"])
+                    # Align by eval steps
+                    wr_steps = eval_steps[:len(win_rates)] if win_rates else []
+                    em_steps = eval_steps[:len(citation_em_values)] if citation_em_values else []
+                    iou_steps = eval_steps[:len(citation_iou_values)] if citation_iou_values else []
+                    max_len = max(len(wr_steps), len(em_steps), len(iou_steps))
+                    for i in range(max_len):
+                        writer.writerow([
+                            wr_steps[i] if i < len(wr_steps) else (em_steps[i] if i < len(em_steps) else (iou_steps[i] if i < len(iou_steps) else "")),
+                            win_rates[i] if i < len(win_rates) else "",
+                            citation_em_values[i] if i < len(citation_em_values) else "",
+                            citation_iou_values[i] if i < len(citation_iou_values) else "",
+                        ])
+                print(f"📄 DPO CSVs saved to: dpo_train_loss.csv, dpo_eval_loss.csv, dpo_eval_metrics.csv")
+            except Exception as _e:
+                print("⚠️ Could not save DPO CSVs")
             
         except Exception as e:
             print(f"⚠️ Could not generate training curves: {e}")

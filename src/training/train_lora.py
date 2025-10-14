@@ -948,7 +948,27 @@ class ProductionQLoRATrainer:
         eval_results = asdict(eval_result)
         with open(output_dir / "eval_results.json", 'w') as f:
             json.dump(eval_results, f, indent=2)
-        
+
+        # Artifact sampling: save a few eval examples with responses and extracted citations
+        try:
+            samples_file = output_dir / "sft_eval_samples.jsonl"
+            max_samples = min(10, len(eval_subset_examples))
+            with open(samples_file, 'w', encoding='utf-8') as f:
+                for ex in eval_subset_examples[:max_samples]:
+                    instr = ex.get('instruction', '')
+                    gold = ex.get('citations', [])
+                    resp = evaluator._generate_response(instr)
+                    preds = evaluator.extract_citations(resp)
+                    f.write(json.dumps({
+                        "instruction": instr,
+                        "gold_citations": gold,
+                        "response": resp,
+                        "predicted_citations": list(preds)
+                    }, ensure_ascii=False) + "\n")
+            print(f"   Saved SFT eval samples to {samples_file}")
+        except Exception:
+            print("⚠️ Could not save SFT eval samples")
+
         # Plot training curves
         self._plot_training_curves(trainer, output_dir)
         
@@ -1026,6 +1046,28 @@ class ProductionQLoRATrainer:
         plt.close()
         
         print(f"   Training curves saved to {output_dir / 'training_curves.png'}")
+        # Export CSV for downstream analysis
+        try:
+            import csv
+            csv_path = output_dir / "training_curves.csv"
+            lrs = [log.get('learning_rate', 0) for log in log_history if 'learning_rate' in log]
+            lr_steps = [log['step'] for log in log_history if 'learning_rate' in log]
+            max_len = max(len(steps), len(eval_steps), len(lr_steps))
+            with open(csv_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["step", "train_loss", "eval_step", "eval_loss", "lr_step", "learning_rate"])
+                for i in range(max_len):
+                    writer.writerow([
+                        steps[i] if i < len(steps) else "",
+                        train_losses[i] if i < len(train_losses) else "",
+                        eval_steps[i] if i < len(eval_steps) else "",
+                        eval_losses[i] if i < len(eval_losses) else "",
+                        lr_steps[i] if i < len(lr_steps) else "",
+                        lrs[i] if i < len(lrs) else "",
+                    ])
+            print(f"   Training curves CSV saved to {csv_path}")
+        except Exception:
+            print("⚠️ Could not save training curves CSV")
     
     def _plot_citation_curves(self, output_dir: Path):
         """Plot citation evaluation curves."""
