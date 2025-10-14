@@ -170,9 +170,22 @@ class FixedTinyPPOLoop:
             "torch_dtype": torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             "device_map": "auto" if torch.cuda.is_available() else None,
         }
-        
+
         if quantization_config:
             model_kwargs["quantization_config"] = quantization_config
+
+        # Optional multi-GPU max_memory hints
+        if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+            try:
+                max_memory = {}
+                for i in range(torch.cuda.device_count()):
+                    total = torch.cuda.get_device_properties(i).total_memory
+                    gb = int(total * 0.9 / (1024**3))
+                    max_memory[str(i)] = f"{gb}GiB"
+                model_kwargs["max_memory"] = max_memory
+                print(f"🔧 Using max_memory hints for PPO: {max_memory}")
+            except Exception:
+                pass
         
         # FIXED: Proper value-head initialization
         if self.dpo_checkpoint_path and Path(self.dpo_checkpoint_path).exists():

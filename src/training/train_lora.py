@@ -600,13 +600,32 @@ class ProductionQLoRATrainer:
             else:
                 attn_impl = "sdpa" if torch.cuda.is_available() else "eager"
 
-        model = AutoModelForCausalLM.from_pretrained(
-            self.config.model_name,
+        # Optional multi-GPU max_memory hints
+        max_memory = None
+        if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+            try:
+                max_memory = {}
+                for i in range(torch.cuda.device_count()):
+                    total = torch.cuda.get_device_properties(i).total_memory
+                    gb = int(total * 0.9 / (1024**3))  # 90% budget
+                    max_memory[str(i)] = f"{gb}GiB"
+                print(f"🔧 Using max_memory hints: {max_memory}")
+            except Exception:
+                max_memory = None
+
+        model_kwargs = dict(
             quantization_config=quantization_config,
             device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
             torch_dtype=preferred_dtype,
-            attn_implementation=attn_impl
+            attn_implementation=attn_impl,
+        )
+        if max_memory:
+            model_kwargs["max_memory"] = max_memory
+
+        model = AutoModelForCausalLM.from_pretrained(
+            self.config.model_name,
+            **model_kwargs
         )
 
         # Move to MPS explicitly if available and not using CUDA

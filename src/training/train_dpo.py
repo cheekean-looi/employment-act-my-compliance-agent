@@ -176,6 +176,19 @@ class FixedEmploymentActDPOTrainer:
                 attn_impl = "sdpa" if torch.cuda.is_available() else "eager"
 
         model_kwargs["attn_implementation"] = attn_impl
+
+        # Optional multi-GPU max_memory hints
+        if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+            try:
+                max_memory = {}
+                for i in range(torch.cuda.device_count()):
+                    total = torch.cuda.get_device_properties(i).total_memory
+                    gb = int(total * 0.9 / (1024**3))
+                    max_memory[str(i)] = f"{gb}GiB"
+                model_kwargs["max_memory"] = max_memory
+                print(f"🔧 Using max_memory hints: {max_memory}")
+            except Exception:
+                pass
         print(f"🧠 Attention implementation: {attn_impl}")
         
         base_model = AutoModelForCausalLM.from_pretrained(
