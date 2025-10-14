@@ -147,36 +147,48 @@ class ProductionSFTGenerator:
                 "Am I entitled to {benefit} as an employee?",
                 "How much {benefit} should I receive according to law?",
                 "What are the legal requirements for {benefit}?",
+                "Does the Employment Act require my employer to provide {benefit}?",
+                "If I am part-time, what is my {benefit} entitlement?",
             ],
             "calculation": [
                 "How is {amount} calculated under the Employment Act?",
                 "What is the formula for calculating {amount}?",
                 "How do I calculate my {amount} entitlement?",
                 "What factors determine my {amount}?",
+                "Is {amount} prorated and how is it computed?",
+                "How do public holidays affect {amount}?",
             ],
             "procedure": [
                 "What is the proper procedure for {action}?",
                 "How should an employer handle {action}?",
                 "What steps must be followed for {action}?",
                 "What is the legal process for {action}?",
+                "Who should I contact to {action}?",
+                "What documents are required to {action}?",
             ],
             "limitations": [
                 "What is the maximum {limit} allowed by law?",
                 "What is the minimum {limit} required?",
                 "Are there legal limits on {limit}?",
                 "What restrictions apply to {limit}?",
+                "Can my employer increase {limit} beyond the legal maximum?",
+                "Does the law allow exceptions to the {limit}?",
             ],
             "rights": [
                 "What are my rights regarding {topic}?",
                 "Can my employer legally {action}?",
                 "What protections do I have against {action}?",
                 "Is {action} permitted under employment law?",
+                "Under what circumstances can my employer {action}?",
+                "Do I have the right to refuse {action}?",
             ],
             "consequences": [
                 "What happens if an employer fails to provide {benefit}?",
                 "What are the penalties for {violation}?",
                 "What remedies are available for {issue}?",
                 "What can I do if my employer {action}?",
+                "Can I claim compensation if my employer {action}?",
+                "What enforcement actions apply for {violation}?",
             ]
         }
     
@@ -224,22 +236,24 @@ class ProductionSFTGenerator:
         raw_section_id = chunk['section_id']
         section_id = self.validator.normalize_section_id(raw_section_id) or raw_section_id
         text = chunk['text']
+        title = chunk.get('title', '') or chunk.get('heading', '') or ''
         
         # Extract key information from chunk
         numeric_claims = self._extract_numeric_claims(text)
         
-        # Choose appropriate template category based on content
-        if any(term in text.lower() for term in ['entitled', 'entitlement', 'days', 'hours']):
+        # Choose appropriate template category based on content (title + text)
+        combined_text = f"{title} {text}".lower()
+        if any(term in combined_text for term in ['entitled', 'entitlement', 'days', 'hours', 'leave', 'overtime']):
             category = "entitlement"
-        elif any(term in text.lower() for term in ['calculate', 'formula', 'rate']):
+        elif any(term in combined_text for term in ['calculate', 'calculation', 'formula', 'rate', 'compute']):
             category = "calculation"
-        elif any(term in text.lower() for term in ['shall', 'must', 'required']):
+        elif any(term in combined_text for term in ['shall', 'must', 'required', 'procedure', 'steps']):
             category = "procedure"
-        elif any(term in text.lower() for term in ['maximum', 'minimum', 'exceed', 'limit']):
+        elif any(term in combined_text for term in ['maximum', 'minimum', 'exceed', 'limit', 'restriction']):
             category = "limitations"
-        elif any(term in text.lower() for term in ['rights', 'protection', 'unlawful']):
+        elif any(term in combined_text for term in ['rights', 'protection', 'unlawful', 'prohibit', 'may not']):
             category = "rights"
-        elif any(term in text.lower() for term in ['penalty', 'offence', 'contravention']):
+        elif any(term in combined_text for term in ['penalty', 'offence', 'contravention', 'fine']):
             category = "consequences"
         else:
             category = random.choice(list(self.question_templates.keys()))
@@ -249,19 +263,58 @@ class ProductionSFTGenerator:
         
         # Extract relevant terms for template filling
         if '{benefit}' in template:
-            benefits = ["annual leave", "medical leave", "overtime pay", "rest day"]
+            benefits = [
+                "annual leave", "medical leave", "sick leave", "maternity leave",
+                "public holiday pay", "rest day", "overtime pay", "termination benefits"
+            ]
             benefit = random.choice(benefits)
             template = template.replace('{benefit}', benefit)
         
         if '{amount}' in template:
-            amounts = ["overtime pay", "termination benefits", "annual leave pay"]
+            amounts = [
+                "overtime pay", "termination benefits", "annual leave pay",
+                "rest day compensation", "public holiday pay"
+            ]
             amount = random.choice(amounts)
             template = template.replace('{amount}', amount)
         
         if '{action}' in template:
-            actions = ["terminate employment", "calculate overtime", "grant leave"]
+            actions = [
+                "terminate employment", "calculate overtime", "grant leave",
+                "resign without notice", "file a complaint", "reduce working hours"
+            ]
             action = random.choice(actions)
             template = template.replace('{action}', action)
+
+        if '{limit}' in template:
+            limits = [
+                "working hours", "overtime", "salary deductions", "rest days", "probation period"
+            ]
+            limit = random.choice(limits)
+            template = template.replace('{limit}', limit)
+
+        if '{topic}' in template:
+            topics = [
+                "working hours", "termination", "leave entitlements", "overtime pay",
+                "salary deductions", "pregnancy protections"
+            ]
+            topic = random.choice(topics)
+            template = template.replace('{topic}', topic)
+
+        if '{violation}' in template:
+            violations = [
+                "failing to pay overtime", "unlawful dismissal", "not granting rest day",
+                "unauthorised salary deduction"
+            ]
+            violation = random.choice(violations)
+            template = template.replace('{violation}', violation)
+
+        if '{issue}' in template:
+            issues = [
+                "unpaid wages", "overtime disputes", "wrongful termination", "leave rejection"
+            ]
+            issue = random.choice(issues)
+            template = template.replace('{issue}', issue)
         
         # Generate instruction
         instruction = template
@@ -331,40 +384,64 @@ class ProductionSFTGenerator:
         """Generate stratified dataset with validation and deduplication."""
         print(f"🎯 Generating {target_size} examples with stratified sampling")
         
-        # Stratified sampling
+        # Helper to process a batch of sections
+        def _ingest_sections(section_ids: List[str],
+                             examples: List[Dict[str, Any]],
+                             seen_hashes: Set[str],
+                             seen_by_section: Dict[str, List[str]]):
+            for section_id in section_ids:
+                chunks = self.section_to_chunks[section_id]
+                chunk = random.choice(chunks)
+
+                # Generate example
+                example = self._generate_instruction_answer_pair(chunk)
+
+                # Hash-level deduplication
+                example_hash = self._hash_example(example['instruction'], section_id)
+                if example_hash in seen_hashes:
+                    continue
+
+                # Per-section near-duplicate check with stricter threshold
+                section_seen = seen_by_section.setdefault(section_id, [])
+                if self._is_duplicate(example['instruction'], section_seen, threshold=0.95):
+                    continue
+
+                # Citation validation
+                if not self._validate_citations(example['citations']):
+                    print(f"Invalid citations for section {section_id}")
+                    continue
+
+                examples.append(example)
+                seen_hashes.add(example_hash)
+                section_seen.append(example['instruction'])
+
+        # First pass
+        examples: List[Dict[str, Any]] = []
+        seen_hashes: Set[str] = set()
+        from collections import defaultdict as _dd
+        seen_instructions_by_section: Dict[str, List[str]] = _dd(list)
+
         selected_sections = self._stratified_sampling(target_size)
+        _ingest_sections(selected_sections, examples, seen_hashes, seen_instructions_by_section)
+
+        # Retry rounds if under target
+        max_rounds = 5
+        rounds = 0
+        while len(examples) < target_size and rounds < max_rounds:
+            missing = target_size - len(examples)
+            # Oversample to offset filters; bound by available sections
+            request = min(max(missing * 2, 10), max(10 * len(self.section_to_chunks), missing * 3))
+            extra_sections = self._stratified_sampling(request)
+            _ingest_sections(extra_sections, examples, seen_hashes, seen_instructions_by_section)
+            rounds += 1
+
+        if len(examples) < target_size:
+            print(f"⚠️ Could not reach target size {target_size}. Generated {len(examples)} after retries.")
+        else:
+            print(f"Generated {len(examples)} valid examples")
         
-        examples = []
-        seen_hashes = set()
-        seen_instructions = []
-        
-        for section_id in selected_sections:
-            chunks = self.section_to_chunks[section_id]
-            chunk = random.choice(chunks)
-            
-            # Generate example
-            example = self._generate_instruction_answer_pair(chunk)
-            
-            # Deduplication check
-            example_hash = self._hash_example(example['instruction'], section_id)
-            if example_hash in seen_hashes:
-                continue
-            
-            # Near-duplicate check
-            if self._is_duplicate(example['instruction'], seen_instructions):
-                continue
-            
-            # Citation validation
-            if not self._validate_citations(example['citations']):
-                print(f"Invalid citations for section {section_id}")
-                continue
-            
-            examples.append(example)
-            seen_hashes.add(example_hash)
-            seen_instructions.append(example['instruction'])
-        
-        print(f"Generated {len(examples)} valid examples")
-        return examples
+        # Return exactly target_size examples if we exceeded due to oversampling
+        return examples[:target_size]
     
     def _split_dataset(self, examples: List[Dict[str, Any]], eval_ratio: float = 0.15) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Split dataset by section to avoid leakage."""
