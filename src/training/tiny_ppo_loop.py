@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 
 class FixedTinyPPOLoop:
     def __init__(self, 
-                 base_model_name: str = "HuggingFaceTB/SmolLM-135M-Instruct",  # Smaller default
+                 base_model_name: str = "meta-llama/Llama-3.2-1B-Instruct",  # Smaller Llama default
                  dpo_checkpoint_path: Optional[Path] = None,
                  use_real_ppo: bool = True,
                  use_4bit: bool = False,  # Optional for PPO
@@ -74,8 +74,8 @@ class FixedTinyPPOLoop:
         print(f"⚡ Real PPO: {use_real_ppo}")
         print(f"🔢 4-bit quantization: {use_4bit}")
         
-        if "SmolLM" not in base_model_name and "7B" in base_model_name:
-            print("⚠️ Warning: Using large model for PPO may cause OOM. Consider using SmolLM-135M.")
+        if ("llama" in base_model_name.lower()) and ("8b" in base_model_name.lower() or "7b" in base_model_name.lower()):
+            print("⚠️ Warning: Large Llama model for PPO may cause OOM. Consider a smaller Llama (e.g., meta-llama/Llama-3.2-1B-Instruct).")
         
         # Load tokenizer
         self.tokenizer = AutoTokenizer.from_pretrained(base_model_name)
@@ -999,8 +999,8 @@ class EnhancedPPORewardJudge:
 def main():
     parser = argparse.ArgumentParser(description="Fixed Tiny PPO Loop with proper value-head initialization")
     parser.add_argument('--dpo-model', help='Path to DPO LoRA checkpoint (recommended)')
-    parser.add_argument('--base-model', default='HuggingFaceTB/SmolLM-135M-Instruct', 
-                       help='Base model name (default: SmolLM-135M-Instruct for memory efficiency)')
+    parser.add_argument('--base-model', default='meta-llama/Llama-3.2-1B-Instruct', 
+                       help='Base model name (default: Llama-3.2-1B-Instruct for memory efficiency)')
     parser.add_argument('--output', required=True, help='Output directory for PPO results')
     parser.add_argument('--use-real-ppo', action='store_true', help='Use real TRL PPOTrainer')
     parser.add_argument('--batch-size', type=int, default=16, help='PPO batch size (smaller default)')
@@ -1016,13 +1016,13 @@ def main():
     args = parser.parse_args()
     
     # Validate model choice for memory
-    if "7B" in args.base_model or "8B" in args.base_model:
+    if ("7B" in args.base_model or "8B" in args.base_model):
         print("⚠️ WARNING: Large model detected. This may cause OOM errors.")
-        print("💡 Consider using --base-model HuggingFaceTB/SmolLM-135M-Instruct for memory efficiency")
+        print("💡 Consider using --base-model meta-llama/Llama-3.2-1B-Instruct for memory efficiency")
         response = input("Continue anyway? (y/N): ")
         if response.lower() != 'y':
-            print("Switching to SmolLM-135M-Instruct for safety...")
-            args.base_model = "HuggingFaceTB/SmolLM-135M-Instruct"
+            print("Switching to Llama-3.2-1B-Instruct for safety...")
+            args.base_model = "meta-llama/Llama-3.2-1B-Instruct"
     
     # Create output directory
     output_path = Path(args.output)
