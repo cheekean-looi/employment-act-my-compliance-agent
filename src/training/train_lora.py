@@ -917,20 +917,29 @@ class ProductionQLoRATrainer:
         eval_result = evaluator.evaluate_examples(eval_subset_examples)
         eval_result.eval_loss = trainer.evaluate()['eval_loss']
         
-        # Add dataset-level presence metrics from validation
+        # Add dataset-level presence metrics from validation (with robust import fallback)
         try:
-            from .validate_dataset import SFTDatasetValidator
+            try:
+                from .validate_dataset import SFTDatasetValidator  # type: ignore
+            except Exception:
+                # Fallback for script execution without package context
+                sys.path.append(str(Path(__file__).parent))
+                from validate_dataset import SFTDatasetValidator  # type: ignore
+
             validator = SFTDatasetValidator()
             examples_with_citations, _, individual_presence_rate = validator.validate_citation_presence_in_output(eval_subset_examples)
-            
+
             # Calculate example-level presence rate
             example_level_rate = (examples_with_citations / len(eval_subset_examples) * 100) if eval_subset_examples else 0.0
-            
+
             # Add presence metrics to eval result
             eval_result.citation_presence_rate = example_level_rate
             eval_result.individual_citation_presence_rate = individual_presence_rate
-            
-            print(f"📊 Added dataset validation metrics: {example_level_rate:.1f}% examples with citations, {individual_presence_rate:.1f}% individual citations present")
+
+            print(
+                f"📊 Added dataset validation metrics: "
+                f"{example_level_rate:.1f}% examples with citations, {individual_presence_rate:.1f}% individual citations present"
+            )
         except Exception as e:
             print(f"⚠️ Could not add dataset validation metrics: {e}")
             # Keep default values (0.0)
