@@ -393,13 +393,26 @@ class ProductionSFTGenerator:
         def _ingest_sections(section_ids: List[str],
                              examples: List[Dict[str, Any]],
                              seen_hashes: Set[str],
-                             seen_by_section: Dict[str, List[str]]):
+                             seen_by_section: Dict[str, List[str]],
+                             global_seen_instructions: Set[str]):
             for section_id in section_ids:
                 chunks = self.section_to_chunks[section_id]
                 chunk = random.choice(chunks)
 
                 # Generate example
                 example = self._generate_instruction_answer_pair(chunk)
+
+                # Ensure global instruction uniqueness to avoid split leakage via identical prompts
+                norm_instr = example['instruction'].strip().lower()
+                if norm_instr in global_seen_instructions:
+                    # Try to add context to disambiguate using title, else section id
+                    title = (chunk.get('title') or chunk.get('heading') or '').strip()
+                    if title and f"(regarding {title.lower()})" not in norm_instr:
+                        example['instruction'] = f"{example['instruction']} (regarding {title})"
+                    else:
+                        # Fall back to canonical section identifier hint
+                        example['instruction'] = f"{example['instruction']} [Section {section_id}]"
+                    norm_instr = example['instruction'].strip().lower()
 
                 # Hash-level deduplication
                 example_hash = self._hash_example(example['instruction'], section_id)
@@ -419,6 +432,7 @@ class ProductionSFTGenerator:
                 examples.append(example)
                 seen_hashes.add(example_hash)
                 section_seen.append(example['instruction'])
+                global_seen_instructions.add(norm_instr)
 
         # First pass
         examples: List[Dict[str, Any]] = []
@@ -427,7 +441,8 @@ class ProductionSFTGenerator:
         seen_instructions_by_section: Dict[str, List[str]] = _dd(list)
 
         selected_sections = self._stratified_sampling(target_size)
-        _ingest_sections(selected_sections, examples, seen_hashes, seen_instructions_by_section)
+        global_seen_instructions: Set[str] = set()
+        _ingest_sections(selected_sections, examples, seen_hashes, seen_instructions_by_section, global_seen_instructions)
 
         # Retry rounds if under target
         max_rounds = 5
@@ -437,7 +452,7 @@ class ProductionSFTGenerator:
             # Oversample to offset filters; bound by available sections
             request = min(max(missing * 2, 10), max(10 * len(self.section_to_chunks), missing * 3))
             extra_sections = self._stratified_sampling(request)
-            _ingest_sections(extra_sections, examples, seen_hashes, seen_instructions_by_section)
+            _ingest_sections(extra_sections, examples, seen_hashes, seen_instructions_by_section, global_seen_instructions)
             rounds += 1
 
         if len(examples) < target_size:
