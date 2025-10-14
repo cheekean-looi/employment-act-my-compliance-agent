@@ -136,7 +136,9 @@ class FixedPreferencePairGenerator:
         for chunk in self.chunks:
             section_id = chunk.get('section_id')
             if section_id:
-                family = self.validator.get_section_family(section_id)
+                # Normalize to canonical before deriving family
+                canonical_id = self.validator.normalize_section_id(section_id) or section_id
+                family = self.validator.get_section_family(canonical_id)
                 if family:
                     if family not in family_map:
                         family_map[family] = []
@@ -292,7 +294,8 @@ class FixedPreferencePairGenerator:
             
             # Add structured retrieval context for chosen responses
             if is_chosen and chunk:
-                section_id = chunk.get('section_id', '')
+                raw_sid = chunk.get('section_id', '')
+                section_id = self.validator.normalize_section_id(raw_sid) or raw_sid
                 title = chunk.get('title', '')
                 excerpt = chunk.get('original_text', chunk.get('text', ''))[:320]
                 ctx = f"Section {section_id}{': ' + title if title else ''}. Excerpt: \"{excerpt}\""
@@ -362,7 +365,7 @@ class FixedPreferencePairGenerator:
     def _validate_grounding(self, response: str, source_section_id: str) -> Dict[str, Any]:
         """Validate grounding using canonical citation patterns."""
         predicted_sections = self.validator.extract_section_ids(response)
-        gold_sections = {source_section_id}
+        gold_sections = {self.validator.normalize_section_id(source_section_id) or source_section_id}
         
         citation_em, citation_iou = self.validator.compute_citation_metrics(predicted_sections, gold_sections)
         
@@ -378,7 +381,8 @@ class FixedPreferencePairGenerator:
     
     def _generate_chosen_answer(self, prompt: str, chunk: Dict) -> str:
         """Generate a high-quality chosen answer with proper citations."""
-        section_id = chunk.get('section_id')
+        raw_sid = chunk.get('section_id')
+        section_id = self.validator.normalize_section_id(raw_sid) or raw_sid
         text = chunk.get('original_text', chunk.get('text', ''))[:300]
         
         # Create a well-grounded answer
@@ -404,10 +408,14 @@ class FixedPreferencePairGenerator:
         # Randomly choose a flaw type
         flaw_type = random.choice(["wrong_section", "remove_citation", "add_hallucination"])
         
-        if flaw_type == "wrong_section" and correct_section_id in response:
+        canonical_correct = self.validator.normalize_section_id(correct_section_id) or correct_section_id
+        if flaw_type == "wrong_section" and (canonical_correct in response or correct_section_id in response):
             # Use a different valid section ID instead of synthetic ones
-            wrong_section = self.validator.get_different_valid_section(correct_section_id)
+            wrong_section = self.validator.get_different_valid_section(canonical_correct)
             if wrong_section:
+                # Replace either canonical or legacy occurrence
+                if canonical_correct in response:
+                    return response.replace(canonical_correct, wrong_section)
                 return response.replace(correct_section_id, wrong_section)
         elif flaw_type == "remove_citation":
             # Remove citation patterns using canonical regex
@@ -423,7 +431,8 @@ class FixedPreferencePairGenerator:
     
     def _generate_rejected_answer(self, prompt: str, chunk: Dict) -> str:
         """Generate a subtly flawed rejected answer with balanced rejection types."""
-        section_id = chunk.get('section_id')
+        raw_sid = chunk.get('section_id')
+        section_id = self.validator.normalize_section_id(raw_sid) or raw_sid
         text = chunk.get('original_text', chunk.get('text', ''))[:300]
         
         # First try SFT drafting for rejected response
@@ -555,8 +564,64 @@ class FixedPreferencePairGenerator:
                 }
             })
 
+        # Grounding quality gate: ensure >= 60% chosen correctly grounded if possible
+        def _chosen_grounded_ratio(items: List[Dict]) -> float:
+            if not items:
+                return 0.0
+            good = sum(1 for p in items if p.get('chosen_grounding', {}).get('correctly_grounded'))
+            return good / len(items)
+
+        ratio = _chosen_grounded_ratio(pairs)
+        max_rounds = 3
+        cap = int(target_size * 1.5)
+        rounds = 0
+        while ratio < 0.6 and len(pairs) < cap and rounds < max_rounds:
+            # Generate a small batch of additional pairs to try to lift grounding ratio
+            batch = min(10, target_size // 3 or 1)
+            for _ in range(batch):
+                template_type = random.choice(template_types)
+                prompt = self._generate_prompt(template_type)
+                chunk = self._get_relevant_chunk(prompt)
+
+                if self.sft_model:
+                    chosen = self._draft_with_sft(prompt, chunk, is_chosen=True)
+                    if not chosen or len(chosen) < 50:
+                        chosen = self._generate_chosen_answer(prompt, chunk)
+                else:
+                    chosen = self._generate_chosen_answer(prompt, chunk)
+
+                rejected = self._generate_rejected_answer(prompt, chunk)
+
+                chosen_grounding = self._validate_grounding(chosen, chunk.get('section_id'))
+                rejected_grounding = self._validate_grounding(rejected, chunk.get('section_id'))
+
+                pairs.append({
+                    "pair_id": f"pair_{len(pairs):04d}",
+                    "prompt": prompt,
+                    "chosen": chosen,
+                    "rejected": rejected,
+                    "source_section": chunk.get('section_id'),
+                    "template_type": template_type,
+                    "label_verified": False,
+                    "chosen_grounding": chosen_grounding,
+                    "rejected_grounding": rejected_grounding,
+                    "metadata": {
+                        "chunk_id": chunk.get('chunk_id'),
+                        "generated_at": datetime.now().isoformat(),
+                        "sft_drafted": self.sft_model is not None,
+                        "validator_version": "canonical_v1"
+                    }
+                })
+            ratio = _chosen_grounded_ratio(pairs)
+            rounds += 1
+
+        if ratio < 0.6:
+            print(f"⚠️ Chosen grounding ratio below target: {ratio:.1%} (< 60%). Consider increasing pairs or improving prompts.")
+        else:
+            print(f"✅ Chosen grounding ratio: {ratio:.1%} (>= 60%)")
+
         random.shuffle(pairs)
-        return pairs[:target_size]
+        return pairs[:max(len(pairs), target_size)]
     
     def save_preference_pairs(self, pairs: List[Dict], output_file: Path, 
                             train_split: float = 0.8) -> Dict[str, List[str]]:
