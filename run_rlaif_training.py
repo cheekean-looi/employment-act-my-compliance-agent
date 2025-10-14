@@ -343,10 +343,15 @@ class RLAIFTrainingPipeline:
         )
         
         # Stream output in real-time
+        previous_line = None
         for line in process.stdout:
-            line = line.strip()
-            if line:
-                self.logger.info(f"[{stage_name}] {line}")
+            line = line.rstrip()
+            if not line:
+                continue
+            if previous_line is not None and line == previous_line:
+                continue
+            previous_line = line
+            self.logger.info(f"[{stage_name}] {line}")
         
         process.wait()
         
@@ -374,7 +379,10 @@ class RLAIFTrainingPipeline:
             cmd.extend(["--sft-model", str(self.config.sft_model)])
             self.logger.info(f"🤖 Using SFT model for drafting: {self.config.sft_model}")
         
+        import time as _t
+        t0 = _t.time()
         self.run_subprocess_with_monitoring(cmd, stage_name)
+        self.logger.info(f"⏱️ [{stage_name}] Duration: {(_t.time()-t0):.1f}s")
         
         if not self.config.dry_run:
             # Validate output
@@ -416,7 +424,10 @@ class RLAIFTrainingPipeline:
         for backend in self.config.logging_backends:
             cmd.extend(["--report-to", backend])
         
+        import time as _t
+        t0 = _t.time()
         self.run_subprocess_with_monitoring(cmd, stage_name)
+        self.logger.info(f"⏱️ [{stage_name}] Duration: {(_t.time()-t0):.1f}s")
         
         if not self.config.dry_run:
             # Validate output
@@ -457,7 +468,10 @@ class RLAIFTrainingPipeline:
         if getattr(self.config, 'ppo_use_4bit', False):
             cmd.append("--use-4bit")
         
+        import time as _t
+        t0 = _t.time()
         self.run_subprocess_with_monitoring(cmd, stage_name)
+        self.logger.info(f"⏱️ [{stage_name}] Duration: {(_t.time()-t0):.1f}s")
         
         if not self.config.dry_run:
             # Validate output
@@ -482,12 +496,18 @@ class RLAIFTrainingPipeline:
                 "state": asdict(self.state),
                 "output_directory": str(self.output_dir)
             },
+            "stage_durations": {
+                "pairs_sec": None,
+                "dpo_sec": None,
+                "ppo_sec": None,
+            },
             "artifacts": {
                 "pairs_file": str(self.state.pairs_output) if self.state.pairs_output else None,
                 "dpo_model": str(self.state.dpo_output) if self.state.dpo_output else None,
                 "ppo_model": str(self.state.ppo_output) if self.state.ppo_output else None,
             }
         }
+        # Extract recent durations from log? Not persisted; left as None here for simplicity
         
         # Save report
         report_file = self.output_dir / "rlaif_final_report.json"
