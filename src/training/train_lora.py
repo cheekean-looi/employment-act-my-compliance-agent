@@ -615,13 +615,26 @@ class ProductionQLoRATrainer:
 
         model_kwargs = dict(
             quantization_config=quantization_config,
-            device_map="auto" if torch.cuda.is_available() else None,
             trust_remote_code=True,
             torch_dtype=preferred_dtype,
             attn_implementation=attn_impl,
+            low_cpu_mem_usage=True,
         )
-        if max_memory:
-            model_kwargs["max_memory"] = max_memory
+        # Prefer explicit single-GPU placement to avoid unintended CPU/disk offload
+        if torch.cuda.is_available():
+            if torch.cuda.device_count() == 1:
+                model_kwargs["device_map"] = {"": 0}
+                try:
+                    total = torch.cuda.get_device_properties(0).total_memory
+                    gb = max(1, int(total * 0.9 / (1024**3)))
+                    model_kwargs["max_memory"] = {"0": f"{gb}GiB"}
+                    print(f"🔧 Using single-GPU max_memory hint: {model_kwargs['max_memory']}")
+                except Exception:
+                    pass
+            else:
+                model_kwargs["device_map"] = "auto"
+                if max_memory:
+                    model_kwargs["max_memory"] = max_memory
 
         model = AutoModelForCausalLM.from_pretrained(
             self.config.model_name,
