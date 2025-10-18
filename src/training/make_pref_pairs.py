@@ -47,7 +47,7 @@ from citation_utils import (
 
 class FixedPreferencePairGenerator:
     def __init__(self, chunks_file: Path, sft_model_path: Optional[Path] = None, 
-                 base_model: str = "meta-llama/Llama-3.1-8B-Instruct"):
+                 base_model: str = "meta-llama/Llama-3.2-1B-Instruct"):
         """Initialize with chunks and optional SFT model for drafting."""
         self.chunks = self._load_chunks(chunks_file)
         self.section_to_chunks = self._group_by_section()
@@ -70,6 +70,18 @@ class FixedPreferencePairGenerator:
         self.sft_model = None
         self.sft_tokenizer = None
         if sft_model_path and Path(sft_model_path).exists():
+            # Auto-align base model to adapter base if available
+            try:
+                cfg_path = Path(sft_model_path) / "adapter_config.json"
+                if cfg_path.exists():
+                    with open(cfg_path, 'r') as f:
+                        _cfg = json.load(f)
+                    hinted = _cfg.get("base_model_name_or_path") or _cfg.get("base_model_name")
+                    if hinted and hinted != self.base_model:
+                        print(f"🔁 Aligning preference drafting base to SFT adapter base: {hinted}")
+                        self.base_model = hinted
+            except Exception:
+                pass
             self._load_sft_model()
         
         # Track rejection types for balance
@@ -160,7 +172,7 @@ class FixedPreferencePairGenerator:
             # Load base model
             base_model = AutoModelForCausalLM.from_pretrained(
                 self.base_model,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                 device_map="auto" if torch.cuda.is_available() else None
             )
             

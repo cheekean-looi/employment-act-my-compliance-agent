@@ -205,7 +205,8 @@ class FixedEmploymentActDPOTrainer:
             print(f"📚 Loading SFT checkpoint from {self.sft_model_path}")
             try:
                 # Load the SFT LoRA adapter as policy model
-                self.model = PeftModel.from_pretrained(base_model, self.sft_model_path)
+                # Load SFT adapter as trainable so DPO can update LoRA params
+                self.model = PeftModel.from_pretrained(base_model, self.sft_model_path, is_trainable=True)
                 print("✅ Successfully loaded SFT adapter as starting policy")
                 
                 # Create reference model (frozen copy)
@@ -222,7 +223,8 @@ class FixedEmploymentActDPOTrainer:
                 if bnb_config:
                     ref_base_model = prepare_model_for_kbit_training(ref_base_model)
                 
-                self.ref_model = PeftModel.from_pretrained(ref_base_model, self.sft_model_path)
+                # Reference model stays frozen (non-trainable)
+                self.ref_model = PeftModel.from_pretrained(ref_base_model, self.sft_model_path, is_trainable=False)
                 
                 # Freeze reference model
                 for param in self.ref_model.parameters():
