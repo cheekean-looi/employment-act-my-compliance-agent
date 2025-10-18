@@ -304,6 +304,20 @@ class RLAIFTrainingPipeline:
         if not self.config.ppo_model:
             self.config.ppo_model = self.config.model_name
 
+        # HF gated model guidance
+        try:
+            gated_models = []
+            for name in filter(None, [self.config.model_name, self.config.ppo_model]):
+                if isinstance(name, str) and name.lower().startswith("meta-llama/"):
+                    gated_models.append(name)
+            if gated_models:
+                self.logger.info(
+                    "🔐 Hugging Face gated models detected: %s. If you see 401 warnings, run 'huggingface-cli login' (in tmux), "
+                    "ensure access is approved on the model page, and prefer HF_HOME over TRANSFORMERS_CACHE.",
+                )
+        except Exception:
+            pass
+
         # Auto-select and propagate base across stages when possible
         # Priority order:
         # 1) If SFT adapter provided, align model_name/ppo_model to its base
@@ -521,6 +535,7 @@ class RLAIFTrainingPipeline:
             "--dpo-model", str(dpo_model),
             "--output", str(ppo_output),
             "--use-real-ppo",
+            "--auto-align-to-adapter",
             "--batch-size", str(self.config.ppo_batch_size),
             "--mini-batch-size", str(self.config.ppo_mini_batch_size),
             "--base-model", self.config.ppo_model,
@@ -538,6 +553,19 @@ class RLAIFTrainingPipeline:
             # Validate output
             if not ppo_output.exists():
                 raise PipelineError(f"Expected PPO output not found: {ppo_output}")
+            # Check for PPO errors recorded by tiny_ppo_loop
+            try:
+                results_path = ppo_output / "ppo_results.json"
+                if results_path.exists():
+                    with open(results_path, 'r') as f:
+                        results = json.load(f)
+                    if isinstance(results, dict) and results.get('error'):
+                        raise PipelineError(f"PPO reported an error: {results['error']}")
+            except PipelineError:
+                raise
+            except Exception:
+                # Non-fatal parsing issues; continue if artifacts are present
+                pass
         
         self.state.ppo_completed = True
         self.state.ppo_output = ppo_output

@@ -435,14 +435,21 @@ class CompletePipeline:
             
             self.run_subprocess_with_monitoring(cmd, stage_name)
             
-            # Find the actual RLAIF output directory (timestamped)
+            # Find the actual RLAIF output directory (timestamped) under the intended base
             rlaif_outputs = list(self.rlaif_dir.glob("rlaif_*"))
+            search_roots = [self.rlaif_dir]
+            if not rlaif_outputs:
+                # Fallback: some environments may write to default repo-relative outputs/
+                fallback_root = Path("outputs")
+                if fallback_root.exists():
+                    rlaif_outputs = list(fallback_root.glob("rlaif_*"))
+                    search_roots.append(fallback_root)
+
             if rlaif_outputs and not self.config.dry_run:
                 rlaif_output_dir = max(rlaif_outputs, key=lambda x: x.stat().st_mtime)
-                
                 dpo_model = rlaif_output_dir / "lora_dpo"
                 ppo_model = rlaif_output_dir / "lora_ppo"
-                
+
                 if dpo_model.exists():
                     self.state.dpo_model = dpo_model
                 if ppo_model.exists():

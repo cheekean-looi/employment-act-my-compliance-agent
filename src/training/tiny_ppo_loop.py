@@ -552,44 +552,32 @@ class FixedTinyPPOLoop:
         ppo_config = PPOConfig(**cfg_kwargs)
         
         # Initialize PPO trainer
-        # Initialize PPO trainer with compatibility across TRL versions
+        # Initialize PPO trainer with compatibility across TRL versions (omit tokenizer fully)
         try:
-            # Newer TRL (common): accepts config=ppo_config
+            # Newer TRL: accepts config=ppo_config, model=..., ref_model=...
             ppo_trainer = PPOTrainer(
                 config=ppo_config,
                 model=self.policy_model,
                 ref_model=self.reference_model,
-                tokenizer=self.tokenizer,
             )
-        except TypeError as _e1:
+        except TypeError:
             try:
-                # Some TRL versions expect positional PPOConfig first
-                ppo_trainer = PPOTrainer(
-                    ppo_config,
-                    self.policy_model,
-                    self.reference_model,
-                    self.tokenizer,
-                )
-            except TypeError as _e2:
+                # Older TRL: positional signature (ppo_config, model, ref_model)
+                ppo_trainer = PPOTrainer(ppo_config, self.policy_model, self.reference_model)
+            except Exception as e:
                 try:
-                    # Fallback: expand config as kwargs
+                    # Fallback: expand config as kwargs with model/ref_model
                     cfg_dict = getattr(ppo_config, 'to_dict', lambda: dict())()
                     if not cfg_dict:
-                        # attempt to use __dict__ (dataclass-like)
                         cfg_dict = getattr(ppo_config, '__dict__', {})
-                    ppo_trainer = PPOTrainer(
-                        model=self.policy_model,
-                        ref_model=self.reference_model,
-                        tokenizer=self.tokenizer,
-                        **cfg_dict,
-                    )
-                except Exception as e:
-                    logger.error(f"PPO trainer initialization failed: {e}")
+                    ppo_trainer = PPOTrainer(model=self.policy_model, ref_model=self.reference_model, **cfg_dict)
+                except Exception as e2:
+                    logger.error(f"PPO trainer initialization failed: {e2}")
                     return {
                         "total_examples": len(prompts),
                         "average_reward": 0.0,
                         "reward_std": 0.0,
-                        "error": f"PPO trainer init failed: {e}",
+                        "error": f"PPO trainer init failed: {e2}",
                         "timestamp": datetime.now().isoformat()
                     }
         
@@ -1188,6 +1176,9 @@ def main():
         print(f"⚡ Used real TRL PPOTrainer with {args.batch_size} batch size")
         if "error" in epoch_stats:
             print(f"❌ PPO training had errors: {epoch_stats['error']}")
+            # Propagate failure to orchestrators so they can react appropriately
+            import sys as _sys
+            _sys.exit(2)
     else:
         print("💡 Used simple PPO demonstration - try --use-real-ppo for full training")
     
