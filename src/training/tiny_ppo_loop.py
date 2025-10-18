@@ -29,6 +29,10 @@ from typing import Dict, List, Any, Optional, Set
 import argparse
 from datetime import datetime
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+try:
+    import transformers as _transformers  # for version metadata in saved summaries
+except Exception:  # pragma: no cover
+    _transformers = None
 from peft import PeftModel, LoraConfig, get_peft_model, TaskType, prepare_model_for_kbit_training
 from trl import PPOTrainer, PPOConfig, AutoModelForCausalLMWithValueHead
 from datasets import Dataset
