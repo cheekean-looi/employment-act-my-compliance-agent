@@ -97,6 +97,7 @@ class CompletePipelineConfig:
     verbose: bool = False
     logging_backends: List[str] = field(default_factory=list)
     cleanup_intermediate: bool = False  # Clean up intermediate files to save space
+    cleanup_light: bool = False         # Light cleanup: remove temp files only (keep logs/artifacts)
     enable_mps_fallback: bool = False   # Opt-in MPS fallback for unsupported ops
     
     @classmethod
@@ -532,18 +533,27 @@ class CompletePipeline:
     
     def cleanup_intermediate_files(self):
         """Clean up intermediate files to save disk space."""
-        if not self.config.cleanup_intermediate:
+        if not (self.config.cleanup_intermediate or self.config.cleanup_light):
             return
         
-        self.logger.info("🧹 Cleaning up intermediate files...")
+        mode = "light" if self.config.cleanup_light and not self.config.cleanup_intermediate else "full"
+        self.logger.info(f"🧹 Cleaning up intermediate files (mode: {mode})...")
         
-        # Clean up large temporary files but keep final models
-        cleanup_patterns = [
-            "*/temp_*",
-            "*/cache_*", 
-            "*/*.tmp",
-            "*/runs/*/events.out.tfevents.*"  # TensorBoard logs
-        ]
+        # Define patterns per mode. Light mode: keep TensorBoard logs and most artifacts.
+        if self.config.cleanup_intermediate:
+            cleanup_patterns = [
+                "*/temp_*",
+                "*/cache_*",
+                "*/*.tmp",
+                "*/runs/*/events.out.tfevents.*"  # TensorBoard logs
+            ]
+        else:
+            # Light cleanup: only transient tmp/cache files
+            cleanup_patterns = [
+                "*/temp_*",
+                "*/cache_*",
+                "*/*.tmp",
+            ]
         
         for pattern in cleanup_patterns:
             for file_path in self.output_dir.glob(pattern):
@@ -789,6 +799,8 @@ def add_common_args(parser, require_input=True):
                     help='Enable logging backends (can specify multiple, e.g., --logging-backends wandb --logging-backends tensorboard)')
     parser.add_argument('--cleanup-intermediate', action='store_true',
                        help='Clean up intermediate files to save space')
+    parser.add_argument('--cleanup-light', action='store_true',
+                       help='Light cleanup of temp/cache files (keeps TensorBoard logs and core artifacts)')
     parser.add_argument('--dry-run', action='store_true', help='Show commands without executing')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
 
