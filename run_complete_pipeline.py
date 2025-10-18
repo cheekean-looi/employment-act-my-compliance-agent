@@ -792,6 +792,8 @@ def add_common_args(parser, require_input=True):
                    help='SFT max sequence length (memory control)')
     rt.add_argument('--dpo-epochs', type=int, help='DPO training epochs')
     rt.add_argument('--ppo-prompts', type=int, help='Number of prompts for PPO rollouts')
+    rt.add_argument('--base-model', help='Override base model for SFT/DPO and PPO (e.g., TinyLlama/TinyLlama-1.1B-Chat-v1.0).'
+                                        ' This is threaded consistently across stages.')
     rt.add_argument('--enable-mps-fallback', action='store_true', help='Enable MPS fallback for unsupported ops (Apple Silicon)')
     
     # Monitoring
@@ -840,6 +842,11 @@ def main():
                             config.sft_config[mapping[key]] = value
                         elif key in ['pairs_size', 'dpo_epochs', 'ppo_prompts']:
                             config.rlaif_config[key] = value
+                        elif key == 'base_model':
+                            # Thread base model consistently across SFT/DPO/PPO unless explicitly set elsewhere
+                            config.sft_config['model_name'] = value
+                            config.rlaif_config['model_name'] = value
+                            config.rlaif_config['ppo_model'] = value
         else:
             # Create config from command line args
             config_dict = {}
@@ -865,6 +872,10 @@ def main():
                         sft_config[mapping[key]] = value
                     elif key in ['pairs_size', 'dpo_epochs', 'ppo_prompts']:
                         rlaif_config[key] = value
+                    elif key == 'base_model':
+                        sft_config['model_name'] = value
+                        rlaif_config['model_name'] = value
+                        rlaif_config['ppo_model'] = value
             
             # Convert paths
             if 'input_path' in config_dict and config_dict['input_path']:
