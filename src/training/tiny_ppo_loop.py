@@ -528,7 +528,6 @@ class FixedTinyPPOLoop:
             learning_rate=learning_rate,
             vf_coef=0.5,            # Value function coefficient
             cliprange=0.2,          # PPO clip range
-            target_kl=0.01,         # Target KL divergence
             seed=self.seed,
             gradient_accumulation_steps=1,  # Memory optimization
             max_grad_norm=1.0,
@@ -543,6 +542,9 @@ class FixedTinyPPOLoop:
         # Some versions include explicit kl_penalty/kl_penalty_cfg; guard add if present
         if 'kl_penalty' in cfg_params:
             cfg_kwargs['kl_penalty'] = 'kl'
+        # Optional target_kl depending on TRL version
+        if 'target_kl' in cfg_params:
+            cfg_kwargs['target_kl'] = 0.01
         ppo_config = PPOConfig(**cfg_kwargs)
         
         # Initialize PPO trainer
