@@ -552,22 +552,46 @@ class FixedTinyPPOLoop:
         ppo_config = PPOConfig(**cfg_kwargs)
         
         # Initialize PPO trainer
+        # Initialize PPO trainer with compatibility across TRL versions
         try:
+            # Newer TRL (common): accepts config=ppo_config
             ppo_trainer = PPOTrainer(
                 config=ppo_config,
                 model=self.policy_model,
                 ref_model=self.reference_model,
                 tokenizer=self.tokenizer,
             )
-        except Exception as e:
-            logger.error(f"PPO trainer initialization failed: {e}")
-            return {
-                "total_examples": len(prompts),
-                "average_reward": 0.0,
-                "reward_std": 0.0,
-                "error": f"PPO trainer init failed: {e}",
-                "timestamp": datetime.now().isoformat()
-            }
+        except TypeError as _e1:
+            try:
+                # Some TRL versions expect positional PPOConfig first
+                ppo_trainer = PPOTrainer(
+                    ppo_config,
+                    self.policy_model,
+                    self.reference_model,
+                    self.tokenizer,
+                )
+            except TypeError as _e2:
+                try:
+                    # Fallback: expand config as kwargs
+                    cfg_dict = getattr(ppo_config, 'to_dict', lambda: dict())()
+                    if not cfg_dict:
+                        # attempt to use __dict__ (dataclass-like)
+                        cfg_dict = getattr(ppo_config, '__dict__', {})
+                    ppo_trainer = PPOTrainer(
+                        model=self.policy_model,
+                        ref_model=self.reference_model,
+                        tokenizer=self.tokenizer,
+                        **cfg_dict,
+                    )
+                except Exception as e:
+                    logger.error(f"PPO trainer initialization failed: {e}")
+                    return {
+                        "total_examples": len(prompts),
+                        "average_reward": 0.0,
+                        "reward_std": 0.0,
+                        "error": f"PPO trainer init failed: {e}",
+                        "timestamp": datetime.now().isoformat()
+                    }
         
         # Prepare prompts dataset with memory optimization
         max_prompts = min(len(prompts), batch_size * 2)  # Limit prompts for memory
