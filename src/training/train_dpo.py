@@ -1079,7 +1079,7 @@ def main():
     parser.add_argument('--train-data', required=True, help='Training preference pairs JSONL file')
     parser.add_argument('--eval-data', required=True, help='Evaluation preference pairs JSONL file')
     parser.add_argument('--output-dir', required=True, help='Output directory for model and logs')
-    parser.add_argument('--model-name', default="meta-llama/Llama-3.1-8B-Instruct", 
+    parser.add_argument('--model-name', default="meta-llama/Llama-3.2-1B-Instruct", 
                        help='Base model name')
     parser.add_argument('--sft-model', help='Path to SFT LoRA checkpoint (recommended)')
     parser.add_argument('--epochs', type=int, default=1, help='Number of training epochs')
@@ -1092,8 +1092,36 @@ def main():
     parser.add_argument('--resume-from-checkpoint', help='Resume training from checkpoint')
     parser.add_argument('--no-4bit', action='store_true', help='Disable 4-bit quantization')
     parser.add_argument('--no-flash-attention', action='store_true', help='Disable flash attention')
+    parser.add_argument('--auto-align-to-adapter', action='store_true',
+                        help='If set and --sft-model is provided, auto-align --model-name to the adapter\'s recorded base instead of failing')
     
     args = parser.parse_args()
+
+    # Guard: if an SFT adapter is provided, ensure base model matches
+    try:
+        if args.sft_model:
+            from pathlib import Path as _Path
+            cfg_path = _Path(args.sft_model) / "adapter_config.json"
+            if cfg_path.exists():
+                with open(cfg_path, 'r') as _f:
+                    _cfg = json.load(_f)
+                _sft_base = _cfg.get("base_model_name_or_path") or _cfg.get("base_model_name")
+                if _sft_base and _sft_base != args.model_name:
+                    if getattr(args, 'auto_align_to_adapter', False):
+                        print(
+                            f"🔁 Auto-aligning --model-name to SFT adapter base: '{_sft_base}' (was '{args.model_name}')"
+                        )
+                        args.model_name = _sft_base
+                    else:
+                        print(
+                            f"❌ Base model mismatch: SFT adapter base is '{_sft_base}' but --model-name is '{args.model_name}'.\n"
+                            "   Pass --auto-align-to-adapter to align automatically, or set --model-name to match the adapter."
+                        )
+                        import sys as _sys
+                        _sys.exit(1)
+    except Exception:
+        # Non-fatal; let downstream loading raise if needed
+        pass
 
     # Best-practice guards: strengthen learning signal and clamp beta
     if args.epochs < 2:

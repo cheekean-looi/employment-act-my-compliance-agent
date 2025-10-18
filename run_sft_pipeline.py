@@ -70,7 +70,7 @@ class SFTConfig:
     chunk_stride: int = 150
     
     # Training config
-    model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
+    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
     epochs: int = 2
     learning_rate: float = 1e-4
     batch_size: int = 4
@@ -104,6 +104,8 @@ class SFTConfig:
     experiment_name: Optional[str] = None
     logging_backends: List[str] = field(default_factory=list)
     use_sfttrainer: bool = False  # Use TRL SFTTrainer instead of custom trainer
+    # Auto-select a suitable base model by VRAM and keep consistent suggestions
+    auto_select_base: bool = True
     
     @classmethod
     def from_file(cls, config_path: Path) -> 'SFTConfig':
@@ -186,6 +188,39 @@ class SFTPipeline:
                 # Warn on large models
                 if '8B' in self.config.model_name or '7B' in self.config.model_name:
                     self.logger.warning("⚠️ Large base model on CPU may be extremely slow. Consider a smaller model (e.g., SmolLM-135M).")
+            elif accel.backend == 'cuda' and self.config.auto_select_base:
+                # Auto-select an appropriate base model when user didn't explicitly override
+                # Heuristic: ≤30 GB → prefer 1B; ≥40 GB → prefer 8B; else 1B
+                # Only override if model_name is still at a known default or empty
+                try:
+                    vram_gb_list = accel.details.get('gpu_memory_gb') if isinstance(accel.details, dict) else None
+                    vram_gb = None
+                    if vram_gb_list and isinstance(vram_gb_list, list) and vram_gb_list:
+                        vram_gb = int(max(vram_gb_list))
+                except Exception:
+                    vram_gb = None
+
+                desired_1b = "meta-llama/Llama-3.2-1B-Instruct"
+                desired_8b = "meta-llama/Llama-3.1-8B-Instruct"
+
+                # Consider it user-overridden if model_name isn't one of our known defaults
+                known_defaults = {desired_1b, desired_8b}
+                user_overridden = self.config.model_name not in known_defaults
+
+                if not user_overridden:
+                    if vram_gb is not None and vram_gb <= 30:
+                        if self.config.model_name != desired_1b:
+                            self.logger.info("🧠 VRAM ≲30 GB detected; selecting small base: meta-llama/Llama-3.2-1B-Instruct for stability")
+                            self.config.model_name = desired_1b
+                    elif vram_gb is not None and vram_gb >= 40:
+                        if self.config.model_name != desired_8b:
+                            self.logger.info("🧠 VRAM ≥40 GB detected; selecting larger base: meta-llama/Llama-3.1-8B-Instruct for quality")
+                            self.config.model_name = desired_8b
+                    else:
+                        # Ambiguous VRAM; prefer the small base
+                        if self.config.model_name != desired_1b:
+                            self.logger.info("ℹ️ Ambiguous VRAM; defaulting to small base: meta-llama/Llama-3.2-1B-Instruct")
+                            self.config.model_name = desired_1b
         except Exception:
             # Best-effort only; continue on failure
             self.accelerator = None
@@ -520,7 +555,7 @@ def add_common_args(parser):
     parser.add_argument('--seed', dest='dataset_seed', type=int, default=42, help='Random seed')
     
     # Training args
-    parser.add_argument('--model-name', default="meta-llama/Llama-3.1-8B-Instruct", help='Base model')
+    parser.add_argument('--model-name', default="meta-llama/Llama-3.2-1B-Instruct", help='Base model')
     parser.add_argument('--epochs', type=int, default=2, help='Training epochs')
     parser.add_argument('--learning-rate', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--batch-size', type=int, default=4, help='Batch size')
@@ -533,6 +568,8 @@ def add_common_args(parser):
     parser.add_argument('--use-sfttrainer', action='store_true', help='Use TRL SFTTrainer')
     parser.add_argument('--report-to', action='append', choices=['tensorboard', 'wandb'], 
                        default=[], help='Logging backends')
+    parser.add_argument('--no-auto-select-base', dest='auto_select_base', action='store_false',
+                       help='Disable VRAM-based auto-selection of base model')
     parser.add_argument('--dry-run', action='store_true', help='Show commands without executing')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
 
@@ -544,6 +581,8 @@ def add_dataset_args(parser):
     parser.add_argument('--size', dest='dataset_size', type=int, default=200, help='Dataset size')
     parser.add_argument('--seed', dest='dataset_seed', type=int, default=42, help='Random seed')
     parser.add_argument('--output-dir', default="outputs", help='Output directory')
+    parser.add_argument('--no-auto-select-base', dest='auto_select_base', action='store_false',
+                       help='Disable VRAM-based auto-selection of base model')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
 
@@ -553,7 +592,7 @@ def add_training_args(parser):
     parser.add_argument('--config', help='Path to configuration file')
     parser.add_argument('--train-data', required=True, help='Training data file')
     parser.add_argument('--eval-data', required=True, help='Evaluation data file')
-    parser.add_argument('--model-name', default="meta-llama/Llama-3.1-8B-Instruct", help='Base model')
+    parser.add_argument('--model-name', default="meta-llama/Llama-3.2-1B-Instruct", help='Base model')
     parser.add_argument('--epochs', type=int, default=2, help='Training epochs')
     parser.add_argument('--learning-rate', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--batch-size', type=int, default=4, help='Batch size')
@@ -561,6 +600,8 @@ def add_training_args(parser):
     parser.add_argument('--use-sfttrainer', action='store_true', help='Use TRL SFTTrainer')
     parser.add_argument('--report-to', action='append', choices=['tensorboard', 'wandb'], 
                        default=[], help='Logging backends')
+    parser.add_argument('--no-auto-select-base', dest='auto_select_base', action='store_false',
+                       help='Disable VRAM-based auto-selection of base model')
     parser.add_argument('--dry-run', action='store_true', help='Dry run mode')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
 

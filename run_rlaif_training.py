@@ -44,6 +44,7 @@ import os
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from src.utils.accelerator import get_accelerator
+import torch
 
 
 class PipelineStage(Enum):
@@ -81,7 +82,7 @@ class RLAIFConfig:
     ppo_mini_batch_size: int = 4
     
     # Model config
-    model_name: str = "meta-llama/Llama-3.1-8B-Instruct"
+    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
     
     # Pipeline control
     skip_pairs: bool = False
@@ -94,6 +95,8 @@ class RLAIFConfig:
     verbose: bool = False
     experiment_name: Optional[str] = None
     logging_backends: List[str] = field(default_factory=list)
+    # Auto-select a suitable base by VRAM and propagate consistently across SFT→DPO→PPO
+    auto_select_base: bool = True
     
     @classmethod
     def from_file(cls, config_path: Path) -> 'RLAIFConfig':
@@ -300,10 +303,68 @@ class RLAIFTrainingPipeline:
         # Resolve PPO base: default to model_name if not set
         if not self.config.ppo_model:
             self.config.ppo_model = self.config.model_name
-        # Memory warnings for large models
+
+        # Auto-select and propagate base across stages when possible
+        # Priority order:
+        # 1) If SFT adapter provided, align model_name/ppo_model to its base
+        # 2) Else, if auto_select_base, pick by VRAM and set BOTH model_name and ppo_model consistently
+        try:
+            desired_1b = "meta-llama/Llama-3.2-1B-Instruct"
+            desired_8b = "meta-llama/Llama-3.1-8B-Instruct"
+
+            sft_base = None
+            if self.config.sft_model and self.config.sft_model.exists():
+                sft_base = self._read_adapter_base(self.config.sft_model)
+                if sft_base:
+                    if self.config.model_name != sft_base:
+                        self.logger.info(f"🔗 Aligning --model-name to SFT adapter base: {sft_base}")
+                        self.config.model_name = sft_base
+                    if self.config.ppo_model != sft_base:
+                        self.logger.info(f"🔗 Aligning --ppo-model to SFT adapter base: {sft_base}")
+                        self.config.ppo_model = sft_base
+
+            # If no SFT adapter base to anchor to, apply VRAM-based selection
+            if not sft_base and self.config.auto_select_base:
+                vram_gb = None
+                if torch.cuda.is_available():
+                    props = torch.cuda.get_device_properties(0)
+                    vram_gb = int(props.total_memory / (1024 ** 3))
+                    self.logger.info(f"🧠 Detected GPU VRAM: ~{vram_gb} GB")
+
+                # Determine if user explicitly overrode model_name
+                known_defaults = {desired_1b, desired_8b}
+                user_overrode_model = self.config.model_name not in known_defaults
+                user_overrode_ppo = (self.config.ppo_model not in known_defaults) and (self.config.ppo_model != self.config.model_name)
+
+                # Only override when not explicitly set by user
+                if not user_overrode_model and not user_overrode_ppo:
+                    chosen = None
+                    if vram_gb is not None and vram_gb <= 30:
+                        chosen = desired_1b
+                    elif vram_gb is not None and vram_gb >= 40:
+                        chosen = desired_8b
+                    else:
+                        chosen = desired_1b
+                    if self.config.model_name != chosen:
+                        self.logger.info(f"🧭 Auto-selected base by VRAM: {chosen}")
+                    self.config.model_name = chosen
+                    self.config.ppo_model = chosen
+
+                # Apply PPO memory heuristics on low VRAM
+                if vram_gb is not None and vram_gb <= 30:
+                    self.config.ppo_use_4bit = True
+                    if getattr(self.config, 'ppo_batch_size', 32) > 8:
+                        self.config.ppo_batch_size = 8
+                    if getattr(self.config, 'ppo_mini_batch_size', 4) > 2:
+                        self.config.ppo_mini_batch_size = 2
+        except Exception:
+            # Non-fatal; proceed with user settings
+            pass
+
+        # Memory warnings for large models regardless of VRAM detection
         if self.config.ppo_model and ("7B" in self.config.ppo_model or "8B" in self.config.ppo_model):
             self.logger.warning(f"⚠️ Large PPO model ({self.config.ppo_model}) may cause OOM")
-            self.logger.info("💡 Consider using SmolLM-135M for memory efficiency")
+            self.logger.info("💡 Consider using meta-llama/Llama-3.2-1B-Instruct for memory efficiency")
 
         self.logger.info("✅ Prerequisites validated")
         # Validate model alignment for early failure (SFT vs model_name)
@@ -648,7 +709,7 @@ def add_common_args(parser, include_chunks=True, include_output=True):
     parser.add_argument('--ppo-use-4bit', action='store_true', help='Enable 4-bit quantization for PPO policy/ref models')
     
     # Model configuration
-    parser.add_argument('--model-name', default="meta-llama/Llama-3.1-8B-Instruct",
+    parser.add_argument('--model-name', default="meta-llama/Llama-3.2-1B-Instruct",
                        help='Base model name')
     
     # Output configuration
@@ -664,6 +725,8 @@ def add_common_args(parser, include_chunks=True, include_output=True):
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--dry-run', action='store_true', help='Show commands without executing')
     parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
+    parser.add_argument('--no-auto-select-base', dest='auto_select_base', action='store_false',
+                       help='Disable VRAM-based auto-selection of a consistent base model across stages')
 
 
 def main():

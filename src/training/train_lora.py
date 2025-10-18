@@ -1267,7 +1267,7 @@ def main():
     parser.add_argument('--output-dir', type=Path, required=True, help='Output directory')
     
     # Model arguments
-    parser.add_argument('--model-name', default="meta-llama/Llama-3.1-8B-Instruct", help='Base model name')
+    parser.add_argument('--model-name', default="meta-llama/Llama-3.2-1B-Instruct", help='Base model name')
     parser.add_argument('--bits', type=int, choices=[4, 8, 16], default=4, help='Quantization bits')
     
     # LoRA arguments

@@ -1030,8 +1030,35 @@ def main():
     parser.add_argument('--use-4bit', action='store_true', help='Use 4-bit quantization (experimental)')
     parser.add_argument('--enable-em-probe', action='store_true', 
                        help='Enable EM probe for reward curve context (tracks citation accuracy trends)')
+    parser.add_argument('--auto-align-to-adapter', action='store_true',
+                       help="If set and --dpo-model is provided, auto-align --base-model to the adapter's recorded base instead of failing")
     
     args = parser.parse_args()
+
+    # Guard: if a DPO adapter is provided, ensure --base-model matches its base
+    try:
+        if args.dpo_model:
+            cfg_path = Path(args.dpo_model) / "adapter_config.json"
+            if cfg_path.exists():
+                with open(cfg_path, 'r') as _f:
+                    _cfg = json.load(_f)
+                _dpo_base = _cfg.get("base_model_name_or_path") or _cfg.get("base_model_name")
+                if _dpo_base and _dpo_base != args.base_model:
+                    if getattr(args, 'auto_align_to_adapter', False):
+                        print(
+                            f"🔁 Auto-aligning --base-model to DPO adapter base: '{_dpo_base}' (was '{args.base_model}')"
+                        )
+                        args.base_model = _dpo_base
+                    else:
+                        print(
+                            f"❌ Base model mismatch: DPO adapter base is '{_dpo_base}' but --base-model is '{args.base_model}'.\n"
+                            "   Pass --auto-align-to-adapter to align automatically, or set --base-model to match the adapter."
+                        )
+                        import sys as _sys
+                        _sys.exit(1)
+    except Exception:
+        # Non-fatal; allow downstream handling if needed
+        pass
     
     # Validate model choice for memory (non-interactive safe fallback)
     if ("7B" in args.base_model or "8B" in args.base_model):
