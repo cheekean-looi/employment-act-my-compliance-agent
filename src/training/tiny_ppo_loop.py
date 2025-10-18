@@ -519,20 +519,31 @@ class FixedTinyPPOLoop:
         print(f"🔄 PPO epochs: {ppo_epochs}")
         print(f"🎛️ Learning rate: {learning_rate}")
         
-        # PPO Configuration with memory optimization (drop unsupported args like model_name)
-        ppo_config = PPOConfig(
+        # PPO Configuration with memory optimization. TRL versions differ on the epoch field name.
+        import inspect as _inspect
+        cfg_params = set(_inspect.signature(PPOConfig).parameters.keys())
+        cfg_kwargs = dict(
             batch_size=batch_size,
             mini_batch_size=mini_batch_size,
-            ppo_epochs=ppo_epochs,
             learning_rate=learning_rate,
-            vf_coef=0.5,  # Value function coefficient
-            cliprange=0.2,  # PPO clip range
-            kl_penalty="kl",  # KL penalty type
-            target_kl=0.01,  # Target KL divergence
+            vf_coef=0.5,            # Value function coefficient
+            cliprange=0.2,          # PPO clip range
+            target_kl=0.01,         # Target KL divergence
             seed=self.seed,
             gradient_accumulation_steps=1,  # Memory optimization
             max_grad_norm=1.0,
         )
+        # Some TRL versions expect "num_ppo_epochs" or "epochs" instead of "ppo_epochs"
+        if 'ppo_epochs' in cfg_params:
+            cfg_kwargs['ppo_epochs'] = ppo_epochs
+        elif 'num_ppo_epochs' in cfg_params:
+            cfg_kwargs['num_ppo_epochs'] = ppo_epochs
+        elif 'epochs' in cfg_params:
+            cfg_kwargs['epochs'] = ppo_epochs
+        # Some versions include explicit kl_penalty/kl_penalty_cfg; guard add if present
+        if 'kl_penalty' in cfg_params:
+            cfg_kwargs['kl_penalty'] = 'kl'
+        ppo_config = PPOConfig(**cfg_kwargs)
         
         # Initialize PPO trainer
         try:
