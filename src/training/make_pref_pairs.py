@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Set, Optional
 import argparse
 from datetime import datetime
+import time
 import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -494,6 +495,18 @@ class FixedPreferencePairGenerator:
     def generate_preference_pairs(self, target_size: int = 60) -> List[Dict]:
         """Generate preference pairs for DPO training with enhanced grounding validation."""
         pairs = []
+        start_time = time.time()
+
+        def _progress(done: int, total: int, phase: str):
+            if total <= 0:
+                return
+            elapsed = max(1e-6, time.time() - start_time)
+            rate = done / elapsed
+            remaining = max(0, total - done)
+            eta = remaining / rate if rate > 0 else 0
+            print(
+                f"⏳ [{phase}] {done}/{total} pairs drafted | {rate:.2f} it/s | ETA {eta/60:.1f} min"
+            )
 
         # Ensure we cover all prompt types and diversify sections early
         template_types = list(self.prompt_templates.keys())
@@ -538,6 +551,9 @@ class FixedPreferencePairGenerator:
                     "validator_version": "canonical_v1"
                 }
             })
+            # Heartbeat every 5 items in first pass
+            if (i + 1) % 5 == 0 or (i + 1) == len(initial_sections):
+                _progress(len(pairs), target_size, phase="drafting")
 
         # Fill remaining slots with regular flow
         remaining = target_size - len(pairs)
@@ -575,6 +591,10 @@ class FixedPreferencePairGenerator:
                     "validator_version": "canonical_v1"
                 }
             })
+            # Heartbeat every 10 items in fill pass
+            drafted = len(pairs)
+            if drafted % 10 == 0 or drafted >= target_size:
+                _progress(drafted, target_size, phase="drafting")
 
         # Grounding quality gate: ensure >= 60% chosen correctly grounded if possible
         def _chosen_grounded_ratio(items: List[Dict]) -> float:
@@ -624,6 +644,7 @@ class FixedPreferencePairGenerator:
                         "validator_version": "canonical_v1"
                     }
                 })
+            _progress(len(pairs), cap, phase="grounding-boost")
             ratio = _chosen_grounded_ratio(pairs)
             rounds += 1
 

@@ -629,6 +629,7 @@ class FixedTinyPPOLoop:
         response_tensors = []
         responses = []
         
+        total_prompts = len(prompt_tensors)
         for i, prompt_tensor in enumerate(prompt_tensors):
             try:
                 # Generate using policy model with memory optimization
@@ -647,6 +648,9 @@ class FixedTinyPPOLoop:
                 # Decode for reward computation
                 response_text = self.tokenizer.decode(response_only, skip_special_tokens=True)
                 responses.append(response_text.strip())
+                # Periodic heartbeat
+                if (i + 1) % max(1, total_prompts // 4 or 1) == 0 or (i + 1) == total_prompts:
+                    print(f"⏳ [PPO gen] {i+1}/{total_prompts} responses generated")
                 
             except Exception as e:
                 logger.warning(f"Generation failed for prompt {i}: {e}")
