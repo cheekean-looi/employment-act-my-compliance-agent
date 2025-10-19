@@ -551,26 +551,37 @@ class FixedTinyPPOLoop:
             cfg_kwargs['target_kl'] = 0.01
         ppo_config = PPOConfig(**cfg_kwargs)
         
-        # Initialize PPO trainer
-        # Initialize PPO trainer with compatibility across TRL versions (omit tokenizer fully)
+        # Initialize PPO trainer with TRL-version aware signature handling
+        import inspect as _inspect
         try:
-            # Newer TRL: accepts config=ppo_config, model=..., ref_model=...
-            ppo_trainer = PPOTrainer(
-                config=ppo_config,
-                model=self.policy_model,
-                ref_model=self.reference_model,
-            )
-        except TypeError:
-            try:
-                # Older TRL: positional signature (ppo_config, model, ref_model)
-                ppo_trainer = PPOTrainer(ppo_config, self.policy_model, self.reference_model)
-            except Exception as e:
+            sig = _inspect.signature(PPOTrainer.__init__)
+            params = set(sig.parameters.keys())
+        except Exception:
+            params = {"config", "model", "ref_model", "tokenizer"}
+
+        # Build common kwargs
+        common_kwargs = {"model": self.policy_model, "ref_model": self.reference_model}
+        if "tokenizer" in params:
+            common_kwargs["tokenizer"] = self.tokenizer
+
+        try:
+            if "config" in params:
+                ppo_trainer = PPOTrainer(config=ppo_config, **common_kwargs)
+            else:
+                # Positional config signature
+                if "tokenizer" in params:
+                    ppo_trainer = PPOTrainer(ppo_config, self.policy_model, self.reference_model, self.tokenizer)
+                else:
+                    ppo_trainer = PPOTrainer(ppo_config, self.policy_model, self.reference_model)
+        except TypeError as e:
+            # If tokenizer is not accepted, retry without it
+            if "tokenizer" in common_kwargs:
                 try:
-                    # Fallback: expand config as kwargs with model/ref_model
-                    cfg_dict = getattr(ppo_config, 'to_dict', lambda: dict())()
-                    if not cfg_dict:
-                        cfg_dict = getattr(ppo_config, '__dict__', {})
-                    ppo_trainer = PPOTrainer(model=self.policy_model, ref_model=self.reference_model, **cfg_dict)
+                    common_kwargs.pop("tokenizer", None)
+                    if "config" in params:
+                        ppo_trainer = PPOTrainer(config=ppo_config, **common_kwargs)
+                    else:
+                        ppo_trainer = PPOTrainer(ppo_config, self.policy_model, self.reference_model)
                 except Exception as e2:
                     logger.error(f"PPO trainer initialization failed: {e2}")
                     return {
@@ -580,6 +591,15 @@ class FixedTinyPPOLoop:
                         "error": f"PPO trainer init failed: {e2}",
                         "timestamp": datetime.now().isoformat()
                     }
+            else:
+                logger.error(f"PPO trainer initialization failed: {e}")
+                return {
+                    "total_examples": len(prompts),
+                    "average_reward": 0.0,
+                    "reward_std": 0.0,
+                    "error": f"PPO trainer init failed: {e}",
+                    "timestamp": datetime.now().isoformat()
+                }
         
         # Prepare prompts dataset with memory optimization
         max_prompts = min(len(prompts), batch_size * 2)  # Limit prompts for memory
