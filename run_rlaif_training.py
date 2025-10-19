@@ -311,9 +311,10 @@ class RLAIFTrainingPipeline:
                 if isinstance(name, str) and name.lower().startswith("meta-llama/"):
                     gated_models.append(name)
             if gated_models:
+                joined = ", ".join(sorted(set(gated_models)))
                 self.logger.info(
-                    "🔐 Hugging Face gated models detected: %s. If you see 401 warnings, run 'huggingface-cli login' (in tmux), "
-                    "ensure access is approved on the model page, and prefer HF_HOME over TRANSFORMERS_CACHE.",
+                    f"🔐 Hugging Face gated models detected: {joined}. If you see 401 warnings, run 'huggingface-cli login' (in tmux), "
+                    "ensure access is approved on the model page, and prefer HF_HOME over TRANSFORMERS_CACHE."
                 )
         except Exception:
             pass
@@ -364,13 +365,20 @@ class RLAIFTrainingPipeline:
                     self.config.model_name = chosen
                     self.config.ppo_model = chosen
 
-                # Apply PPO memory heuristics on low VRAM
-                if vram_gb is not None and vram_gb <= 30:
+            # Apply PPO memory heuristics on low VRAM regardless of SFT anchoring
+            try:
+                vram_gb_ppo = None
+                if torch.cuda.is_available():
+                    props0 = torch.cuda.get_device_properties(0)
+                    vram_gb_ppo = int(props0.total_memory / (1024 ** 3))
+                if vram_gb_ppo is not None and vram_gb_ppo <= 30:
                     self.config.ppo_use_4bit = True
                     if getattr(self.config, 'ppo_batch_size', 32) > 8:
                         self.config.ppo_batch_size = 8
                     if getattr(self.config, 'ppo_mini_batch_size', 4) > 2:
                         self.config.ppo_mini_batch_size = 2
+            except Exception:
+                pass
         except Exception:
             # Non-fatal; proceed with user settings
             pass
