@@ -646,7 +646,17 @@ class CompletePipeline:
             
             # Generate final report
             final_report = self.generate_final_report()
-            
+
+            # Update a stable "latest" symlink to point to this successful run
+            try:
+                from subprocess import run as _run
+                link_root = self.config.output_dir  # e.g., /mnt/data/employment-act/outputs
+                link_path = link_root / "latest"
+                _run(["ln", "-sfn", str(self.output_dir), str(link_path)], check=False)
+                self.logger.info(f"🔗 Updated symlink: {link_path} -> {self.output_dir}")
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not update latest symlink: {e}")
+
             # Success message
             total_duration = datetime.now() - self.state.start_time
             self.logger.info(f"\n🎉 Complete Pipeline Finished Successfully!")
